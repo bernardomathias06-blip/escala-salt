@@ -882,7 +882,16 @@ async function gerarEscala(){
   document.getElementById('result-wrap').style.display='none';
   document.getElementById('gen-error').style.display='none';
   startLoadingCycle();
-  const prompt=buildPrompt();
+  let prompt;
+  try{ prompt=buildPrompt(); }
+  catch(buildErr){
+    stopLoading();
+    document.getElementById('loading-wrap').style.display='none';
+    document.getElementById('gen-error').textContent='Erro ao preparar prompt: '+buildErr.message;
+    document.getElementById('gen-error').style.display='block';
+    console.error('buildPrompt error:', buildErr);
+    return;
+  }
   try{
     const resp=await fetch('https://api.groq.com/openai/v1/chat/completions',{
       method:'POST',
@@ -904,8 +913,19 @@ async function gerarEscala(){
     stopLoading();
     document.getElementById('loading-wrap').style.display='none';
     document.getElementById('result-wrap').style.display='block';
-    if(escalaJSON) renderEscalaJSON(escalaJSON);
-    else renderEscala(raw);
+    try{
+      if(escalaJSON) renderEscalaJSON(escalaJSON);
+      else renderEscala(raw);
+    }catch(renderErr){
+      console.error('Render error:', renderErr);
+      // Show raw response in table as fallback
+      const thead=document.getElementById('escala-thead');
+      const tbody=document.getElementById('escala-tbody');
+      const just=document.getElementById('justificativa');
+      if(thead) thead.innerHTML='<tr><th>Resposta bruta da IA</th></tr>';
+      if(tbody) tbody.innerHTML='<tr><td style="white-space:pre-wrap;font-size:11px;color:var(--text2)">'+raw.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</td></tr>';
+      if(just) just.textContent='Erro ao renderizar: '+renderErr.message+'. Tente regenerar.';
+    }
   }catch(e){
     stopLoading();
     document.getElementById('loading-wrap').style.display='none';
@@ -995,7 +1015,7 @@ function renderEscalaJSON(data){
     tr.appendChild(tdV);
     tbody.appendChild(tr);
   });
-  document.getElementById('justificativa').textContent=data.justificativa||'(sem justificativa)';
+  const justEl=document.getElementById('justificativa'); if(justEl) justEl.textContent=data.justificativa||'(sem justificativa)';
 }
 
 function exportarCSV(){
