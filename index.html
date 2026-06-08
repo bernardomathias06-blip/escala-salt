@@ -725,62 +725,96 @@ function startLoadingCycle(){
 
 function stopLoading(){ if(loadTimer) clearInterval(loadTimer); }
 
+// Normalize cell name to prefix group
+function normalizeCelula(raw){
+  if(!raw) return '';
+  const s=raw.trim();
+  const prefixes=['Wake','DC','One Way','One','Restart','Marvel','Setor','Grupo'];
+  for(const p of prefixes){
+    if(s.toLowerCase().startsWith(p.toLowerCase())) return p;
+  }
+  return s.split(/\s+/)[0];
+}
+
 function buildPrompt(){
   const funcoes=document.getElementById('funcoes').value.trim();
-  const semanas=document.getElementById('num-semanas').value;
+  const nSemanas=parseInt(document.getElementById('num-semanas').value)||4;
   const evento=document.getElementById('evento').value||'Culto dominical';
   const dataInicio=document.getElementById('data-inicio').value;
   const obs=document.getElementById('obs').value.trim();
-  const nameH=colName>=0?headers[colName]:'Nome';
-  const cellH=colCell>=0?headers[colCell]:'Célula';
   const extraH=colsExtra.map(i=>headers[i]).join(', ');
-  // Only include mapped columns to reduce token count
-  const essentialCols=[
-    ...(colName>=0?[colName]:[]),
-    ...(colCell>=0?[colCell]:[]),
-    ...colsExtra
-  ];
+
+  // Volunteer list with normalized cell prefix
   const linhasVol=csvData.map(r=>{
     const parts=[];
     if(colName>=0) parts.push(r[colName]||'?');
-    if(colCell>=0) parts.push(r[colCell]||'?');
+    if(colCell>=0){
+      const raw=r[colCell]||'';
+      const norm=normalizeCelula(raw);
+      parts.push(norm&&norm!==raw?`${raw}[${norm}]`:raw);
+    }
     colsExtra.forEach(i=>{if(r[i]) parts.push(`${headers[i]}:${r[i]}`);});
     return parts.join(',');
   }).join('\n');
   const volHeader=(colName>=0?[headers[colName]]:[]).concat(colCell>=0?[headers[colCell]]:[]).concat(colsExtra.map(i=>headers[i])).join(',');
 
-  // Calculate week dates
+  // Proportionality calculation
+  let totalVagasPorCulto=0;
+  if(funcoes){
+    const matches=funcoes.match(/\((\d+)/g);
+    if(matches) totalVagasPorCulto=matches.reduce((s,m)=>s+parseInt(m.slice(1)),0);
+  }
+  if(!totalVagasPorCulto) totalVagasPorCulto=Math.ceil(csvData.length/nSemanas);
+  const totalVagasMes=totalVagasPorCulto*nSemanas;
+  const mediaServicos=(totalVagasMes/csvData.length).toFixed(1);
+  const maxServicos=Math.ceil(totalVagasMes/csvData.length)+1;
+
+  // Week dates
   let weekDates=[];
   if(dataInicio){
     let d=new Date(dataInicio+'T12:00:00');
-    for(let i=0;i<parseInt(semanas);i++){
+    for(let i=0;i<nSemanas;i++){
       const dd=new Date(d);dd.setDate(d.getDate()+i*7);
       weekDates.push(dd.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'}));
     }
   }
 
-  return `Você é um assistente especializado em montar escalas de serviço voluntário para igrejas e ministérios jovens.
+  const weekTemplate=Array.from({length:nSemanas},(_,i)=>
+    `{"semana":${i+1},"data":"${weekDates[i]||''}","funcoes":[]}`
+  ).join(',');
 
-VOLUNTÁRIOS (${csvData.length}):
+  return `Monte uma escala de serviço voluntário para igreja.
+
+VOLUNTÁRIOS (${csvData.length} pessoas) — formato: Nome,Célula[grupo],outros:
 ${volHeader}
 ${linhasVol}
 
 FUNÇÕES E VAGAS POR CULTO:
-${funcoes||'Distribuir voluntários de forma equilibrada entre as semanas'}
+${funcoes||`~${totalVagasPorCulto} voluntários por semana`}
 
-CONFIGURAÇÃO:
-- Evento: ${evento}
-- Semanas a escalar: ${semanas}
-${weekDates.length?`- Datas: ${weekDates.join(', ')}`:''}
-- 1ª coluna=Nome, 2ª coluna=Célula${extraH?`, outras: ${extraH}`:''}
+REGRA 1 — PROPORCIONALIDADE (mais importante):
+- Total de vagas no período: ${totalVagasMes} (${totalVagasPorCulto} vagas × ${nSemanas} semanas)
+- Total de voluntários: ${csvData.length}
+- Média: cada voluntário serve ~${mediaServicos}x no período
+- Máximo permitido por voluntário: ${maxServicos}x
+- Se total de vagas < total de voluntários, nem todos servem — isso é correto e esperado
+- NÃO escale mais pessoas por culto do que as vagas especificadas
 
-CRITÉRIOS: 1)Mesma célula no mesmo domingo(prioridade máxima) 2)Ninguém serve 2x seguidas 3)Mesclar M/F 4)Mesclar idades 5)Respeitar função
+REGRA 2 — AGRUPAMENTO DE CÉLULAS:
+- O nome da célula pode ser longo (ex: "Wake Faith", "Wake Path") — o prefixo entre [] é o grupo real
+- Voluntários do mesmo grupo (mesmo prefixo) devem servir no mesmo domingo sempre que possível
+
+REGRA 3 — SEM CONSECUTIVIDADE:
+- Nenhum voluntário pode servir em dois domingos seguidos
+
+REGRA 4 — EQUILÍBRIO:
+- Mesclar gêneros (M/F) e faixas etárias quando disponível
 
 ${obs?`REGRAS ESPECIAIS:\n${obs}\n`:''}
 
-Retorne APENAS este JSON (sem texto antes ou depois):
-{"semanas":[{"semana":1,"data":"${weekDates[0]||''}","funcoes":[{"funcao":"NOME_FUNCAO","voluntarios":[{"nome":"NOME_VOLUNTARIO","celula":"CELULA"}]}]},{"semana":2,"data":"${weekDates[1]||''}","funcoes":[]},{"semana":3,"data":"${weekDates[2]||''}","funcoes":[]},{"semana":4,"data":"${weekDates[3]||''}","funcoes":[]}],"justificativa":"TEXTO"}
-Preencha os ${semanas} objetos de semana com os voluntários reais da lista. Use nomes exatos.`;
+Retorne SOMENTE JSON, sem texto fora:
+{"semanas":[${weekTemplate}],"justificativa":"explique em 3 frases a lógica usada"}
+Preencha cada semana respeitando as vagas exatas por função. Use nomes exatos da lista.`;
 }
 
 async function gerarEscala(){
