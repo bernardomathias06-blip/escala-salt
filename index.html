@@ -443,8 +443,8 @@ select option{background:var(--surface2)}
         Planilha Google Sheets
       </div>
       <label>URL do Google Sheets (publicado como CSV)</label>
-      <input type="text" id="sheets-url" placeholder="https://docs.google.com/spreadsheets/d/SEU_ID/pub?output=csv" />
-      <div class="hint">Arquivo → Compartilhar → Publicar na web → Selecionar aba → CSV → Publicar → copiar URL</div>
+      <input type="text" id="sheets-url" placeholder="Cole qualquer link do Google Sheets (edição, compartilhamento ou publicação)" />
+      <div class="hint">Aceita qualquer link do Google Sheets. Para planilhas privadas, publique como CSV: Arquivo → Compartilhar → Publicar na web → CSV</div>
       <label>Ou cole os dados CSV diretamente</label>
       <textarea id="csv-direct" placeholder="Nome,Célula,Idade,Sexo,Função&#10;João Silva,Célula Alfa,22,M,Multimídia&#10;Maria Costa,Célula Beta,28,F,Louvor&#10;Pedro Lima,Célula Alfa,19,M,Recepção"></textarea>
       <div id="load-error"></div>
@@ -635,6 +635,37 @@ function goStep(n){
   window.scrollTo({top:0,behavior:'smooth'});
 }
 
+// Extract spreadsheet ID and optional gid from any Google Sheets URL
+function parseSheetUrl(url){
+  const idMatch=url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  if(!idMatch) return null;
+  const id=idMatch[1];
+  const gidMatch=url.match(/[#&?]gid=(\d+)/);
+  const gid=gidMatch?gidMatch[1]:null;
+  return {id,gid};
+}
+
+function buildCsvUrl(url){
+  // Already a CSV pub URL
+  if(url.includes('output=csv')) return url;
+  const parsed=parseSheetUrl(url);
+  if(!parsed) return null;
+  let csvUrl=`https://docs.google.com/spreadsheets/d/${parsed.id}/pub?output=csv`;
+  if(parsed.gid) csvUrl+=`&gid=${parsed.gid}`;
+  // If URL has /edit or /view, it's a regular link — needs to be published first
+  // but we try anyway via export URL as fallback
+  return csvUrl;
+}
+
+function buildExportUrl(url){
+  // Alternative: use /export endpoint (works without publishing for public sheets)
+  const parsed=parseSheetUrl(url);
+  if(!parsed) return null;
+  let exportUrl=`https://docs.google.com/spreadsheets/d/${parsed.id}/export?format=csv`;
+  if(parsed.gid) exportUrl+=`&gid=${parsed.gid}`;
+  return exportUrl;
+}
+
 async function loadData(){
   const url=document.getElementById('sheets-url').value.trim();
   const csv=document.getElementById('csv-direct').value.trim();
@@ -643,14 +674,25 @@ async function loadData(){
   let raw=csv;
   if(!raw&&url){
     try{
-      let fetchUrl=url;
-      if(url.includes('spreadsheets/d/')&&!url.includes('/pub')){
-        const id=url.match(/\/d\/([^/]+)/)?.[1];
-        if(id) fetchUrl=`https://docs.google.com/spreadsheets/d/${id}/pub?output=csv`;
+      const csvUrl=buildCsvUrl(url);
+      const exportUrl=buildExportUrl(url);
+      if(!csvUrl&&!exportUrl){
+        throw new Error('URL inválida. Cole o link do Google Sheets (qualquer formato aceito).');
       }
-      const r=await fetch(fetchUrl);
-      if(!r.ok) throw new Error('Não foi possível carregar. Verifique se a planilha está publicada como CSV.');
-      raw=await r.text();
+      // Try pub CSV first, then export URL as fallback
+      let resp=null;
+      const urlsToTry=[csvUrl,exportUrl].filter(Boolean);
+      for(const tryUrl of urlsToTry){
+        try{
+          resp=await fetch(tryUrl);
+          if(resp.ok){ raw=await resp.text(); break; }
+        }catch(fetchErr){ resp=null; }
+      }
+      if(!raw){
+        throw new Error(
+          'Não foi possível carregar a planilha. Verifique se ela está pública (qualquer pessoa com o link pode ver) ou publique como CSV em: Arquivo → Compartilhar → Publicar na web → CSV.'
+        );
+      }
     }catch(e){errEl.innerHTML=`<div class="error-box">${e.message}</div>`;return;}
   }
   if(!raw){errEl.innerHTML='<div class="error-box">Cole os dados CSV ou insira a URL.</div>';return;}
