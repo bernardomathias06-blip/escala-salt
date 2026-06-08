@@ -902,10 +902,10 @@ async function gerarEscala(){
       // fallback to text render if JSON fails
     }
     stopLoading();
-    if(escalaJSON) renderEscalaJSON(escalaJSON);
-    else renderEscala(raw);
     document.getElementById('loading-wrap').style.display='none';
     document.getElementById('result-wrap').style.display='block';
+    if(escalaJSON) renderEscalaJSON(escalaJSON);
+    else renderEscala(raw);
   }catch(e){
     stopLoading();
     document.getElementById('loading-wrap').style.display='none';
