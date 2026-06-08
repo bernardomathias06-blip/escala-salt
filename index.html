@@ -871,13 +871,21 @@ async function gerarEscala(){
     if(data.error) throw new Error(data.error?.message||JSON.stringify(data.error));
     const raw=data.choices?.[0]?.message?.content||'';
     escalaTexto=raw;
-    // Parse JSON response
+    // Parse JSON response — try multiple strategies
     let escalaJSON=null;
     try{
-      const clean=raw.replace(/```json|```/g,'').trim();
+      // Strategy 1: clean markdown fences and parse directly
+      let clean=raw.replace(/```json[\s\S]*?```/g,m=>m.slice(m.indexOf('\n')+1,m.lastIndexOf('```'))).trim();
+      if(clean.startsWith('```')) clean=clean.replace(/```[a-z]*/,'').replace(/```$/,'').trim();
+      // Strategy 2: extract first { ... } block if there's surrounding text
+      if(!clean.startsWith('{')){
+        const jsonStart=clean.indexOf('{');
+        const jsonEnd=clean.lastIndexOf('}');
+        if(jsonStart>=0&&jsonEnd>jsonStart) clean=clean.slice(jsonStart,jsonEnd+1);
+      }
       escalaJSON=JSON.parse(clean);
     }catch(e){
-      // fallback to text render if JSON fails
+      console.warn('JSON parse failed:', e.message, '| Raw starts with:', raw.slice(0,100));
     }
     stopLoading();
     document.getElementById('loading-wrap').style.display='none';
@@ -919,14 +927,23 @@ function getCellColor(cell){
 }
 
 function renderEscala(text){
-  // Fallback: display raw text in the table as a single cell
+  // Try once more to parse as JSON before showing raw text
+  try{
+    const jsonStart=text.indexOf('{');
+    const jsonEnd=text.lastIndexOf('}');
+    if(jsonStart>=0&&jsonEnd>jsonStart){
+      const possible=JSON.parse(text.slice(jsonStart,jsonEnd+1));
+      if(possible.semanas){renderEscalaJSON(possible);return;}
+    }
+  }catch(e){}
+  // Fallback: show in table
   const thead=document.getElementById('escala-thead');
   const tbody=document.getElementById('escala-tbody');
   const just=document.getElementById('justificativa');
   if(!thead||!tbody) return;
-  thead.innerHTML='<tr><th>Resposta da IA</th></tr>';
-  tbody.innerHTML='<tr><td style="white-space:pre-wrap;font-size:12px;line-height:1.7;color:var(--text2)">'+text.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</td></tr>';
-  if(just) just.textContent='(resposta não estruturada — tente regenerar)';
+  thead.innerHTML='<tr><th>Resposta da IA (não estruturada — tente regenerar)</th></tr>';
+  tbody.innerHTML='<tr><td style="white-space:pre-wrap;font-size:12px;line-height:1.7;color:var(--text2);padding:16px">'+text.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</td></tr>';
+  if(just) just.textContent='';
 }
 
 let escalaData=null; // store parsed JSON for export
