@@ -389,14 +389,14 @@ select option{background:var(--surface2)}
 /* icons inline */
 .icon{display:inline-block;vertical-align:middle;width:16px;height:16px;margin-right:4px}
 /* escala table */
-#escala-table th{background:var(--surface2);padding:9px 14px;text-align:left;color:var(--accent);font-family:'Syne',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;border-bottom:1px solid var(--border);white-space:nowrap}
-#escala-table td{padding:8px 14px;border-bottom:0.5px solid var(--border);color:var(--text);vertical-align:top;font-size:13px}
+#escala-table{table-layout:auto}
+#escala-table th{background:var(--surface2);padding:8px 12px;text-align:left;color:var(--accent);font-family:'Syne',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border);white-space:nowrap;position:sticky;top:0}
+#escala-table td{padding:10px 12px;border-bottom:0.5px solid var(--border);border-right:0.5px solid var(--border);color:var(--text);vertical-align:top;font-size:13px;min-width:120px}
+#escala-table td:last-child{border-right:none}
 #escala-table tr:last-child td{border-bottom:none}
-#escala-table tr:hover td{background:var(--surface2)}
-#escala-table td.week-cell{font-family:'Syne',sans-serif;font-weight:700;font-size:12px;color:var(--accent);white-space:nowrap}
-#escala-table td.date-cell{color:var(--text2);white-space:nowrap;font-size:12px}
-#escala-table td.role-cell{color:var(--text2);font-size:12px;white-space:nowrap}
-.vol-pill{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:20px;font-size:11px;border:1px solid var(--border2);background:var(--surface);margin:2px;white-space:nowrap}
+#escala-table tr:hover td{background:rgba(255,255,255,0.02)}
+#escala-table td.week-cell{font-family:'Syne',sans-serif;font-weight:700;font-size:12px;color:var(--accent);white-space:nowrap;min-width:80px}
+#escala-table td.date-cell{color:var(--text2);white-space:nowrap;font-size:12px;min-width:80px}
 </style>
 </head>
 <body>
@@ -728,148 +728,117 @@ function stopLoading(){ if(loadTimer) clearInterval(loadTimer); }
 // Normalize cell name to prefix group
 function normalizeCelula(raw){
   if(!raw) return '';
-  const s=raw.trim();
-  const prefixes=['Wake','DC','One Way','One','Restart','Marvel','Setor','Grupo'];
+  const prefixes=['Wake','DC','One Way','Restart','Marvel','Setor','Grupo'];
   for(const p of prefixes){
-    if(s.toLowerCase().startsWith(p.toLowerCase())) return p;
+    if(raw.trim().toLowerCase().startsWith(p.toLowerCase())) return p;
   }
-  return s.split(/\s+/)[0];
+  return raw.trim().split(/\s+/)[0];
 }
 
-// Pre-assign volunteers to weeks — balanced round-robin by cell group
-function preAssignWeeks(nSemanas, vagasPorCulto){
-  // Group volunteers by cell prefix, preserving original index
-  const groups={};
+// Distribute volunteers evenly across weeks, keeping cell groups together
+function distribuirVoluntarios(nSemanas){
+  // Build groups by prefix
+  const grupos={};
   csvData.forEach((r,idx)=>{
-    const nome=(colName>=0?r[colName]:null)||'?';
-    const celula=(colCell>=0?r[colCell]:null)||'';
+    const nome=(colName>=0?r[colName]:'')||'?';
+    const celula=(colCell>=0?r[colCell]:'')||'';
     const grupo=normalizeCelula(celula)||'Outros';
-    if(!groups[grupo]) groups[grupo]=[];
-    groups[grupo].push({nome,celula,grupo,idx});
+    if(!grupos[grupo]) grupos[grupo]=[];
+    grupos[grupo].push({nome,celula,grupo,idx});
   });
 
-  const sortedGroups=Object.values(groups).sort((a,b)=>b.length-a.length);
-  const slots=Array.from({length:nSemanas},()=>[]); // one slot per week
+  // Sort groups by size desc so large groups are distributed first
+  const listaGrupos=Object.values(grupos).sort((a,b)=>b.length-a.length);
+  const semanas=Array.from({length:nSemanas},()=>[]);
 
-  // Distribute each group across weeks, keeping same-group people together
-  // Use a rotating pointer so groups spread evenly
-  let ptr=0;
-  sortedGroups.forEach(group=>{
-    // If group is larger than vagasPorCulto, split across multiple weeks
-    const maxPerWeek=Math.max(1, vagasPorCulto);
-    const chunks=[];
-    for(let i=0;i<group.length;i+=maxPerWeek){
-      chunks.push(group.slice(i,i+maxPerWeek));
+  // Assign each group to the week with fewest people (greedy)
+  listaGrupos.forEach(grupo=>{
+    // Split group into sub-chunks if too large (max ~ceil(total/semanas) per chunk)
+    const maxChunk=Math.ceil(csvData.length/nSemanas);
+    for(let i=0;i<grupo.length;i+=maxChunk){
+      const chunk=grupo.slice(i,i+maxChunk);
+      // Find week with fewest people
+      const menor=semanas.reduce((mi,s,si)=>s.length<semanas[mi].length?si:mi,0);
+      semanas[menor].push(...chunk);
     }
-    chunks.forEach(chunk=>{
-      // find the week with fewest people starting from ptr
-      let best=0;
-      let bestLen=Infinity;
-      for(let i=0;i<nSemanas;i++){
-        const wi=(ptr+i)%nSemanas;
-        if(slots[wi].length<bestLen){bestLen=slots[wi].length;best=wi;}
-      }
-      slots[best].push(...chunk);
-      ptr=(best+1)%nSemanas;
-    });
   });
 
-  // Final rebalance: move people from heaviest to lightest until balanced
-  const target=Math.ceil(csvData.length/nSemanas);
-  for(let pass=0;pass<20;pass++){
-    const maxIdx=slots.reduce((mi,s,i)=>s.length>slots[mi].length?i:mi,0);
-    const minIdx=slots.reduce((mi,s,i)=>s.length<slots[mi].length?i:mi,0);
-    if(slots[maxIdx].length-slots[minIdx].length<=1) break;
-    // move last person from max to min (try not to break group cohesion)
-    const moved=slots[maxIdx].splice(slots[maxIdx].length-1,1);
-    slots[minIdx].push(...moved);
-  }
-
-  return slots;
+  return semanas;
 }
 
 function buildPrompt(){
-  const funcoes=document.getElementById('funcoes').value.trim();
+  const funcoesRaw=document.getElementById('funcoes').value.trim();
   const nSemanas=parseInt(document.getElementById('num-semanas').value)||4;
   const evento=document.getElementById('evento').value||'Culto dominical';
   const dataInicio=document.getElementById('data-inicio').value;
   const obs=document.getElementById('obs').value.trim();
-  const extraH=colsExtra.map(i=>headers[i]).join(', ');
 
-  // Proportionality calculation
-  let vagasPorCulto=0;
-  if(funcoes){
-    const matches=funcoes.match(/\((\d+)/g);
-    if(matches) vagasPorCulto=matches.reduce((s,m)=>s+parseInt(m.slice(1)),0);
-  }
-  if(!vagasPorCulto) vagasPorCulto=Math.ceil(csvData.length/nSemanas);
-  const totalVagasMes=vagasPorCulto*nSemanas;
-  const mediaServicos=(totalVagasMes/csvData.length).toFixed(1);
+  // Parse functions and vagas
+  const funcoesList=funcoesRaw
+    ? funcoesRaw.split('\n').filter(Boolean).map(l=>{
+        const m=l.match(/^(.+?)\s*\((\d+)/);
+        return m?{nome:m[1].trim(),vagas:parseInt(m[2])}:{nome:l.trim(),vagas:1};
+      })
+    : [{nome:'Serviço geral',vagas:Math.ceil(csvData.length/nSemanas)}];
 
-  // Pre-assign volunteers to weeks
-  const weekAssignments=preAssignWeeks(nSemanas,vagasPorCulto);
+  const vagasPorCulto=funcoesList.reduce((s,f)=>s+f.vagas,0)||Math.ceil(csvData.length/nSemanas);
 
   // Week dates
-  let weekDates=[];
+  const weekDates=[];
   if(dataInicio){
-    let d=new Date(dataInicio+'T12:00:00');
+    const d=new Date(dataInicio+'T12:00:00');
     for(let i=0;i<nSemanas;i++){
-      const dd=new Date(d);dd.setDate(d.getDate()+i*7);
+      const dd=new Date(d);
+      dd.setDate(d.getDate()+i*7);
       weekDates.push(dd.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'}));
     }
   }
 
-  // Build per-week volunteer lists for prompt
-  const weekBlocks=weekAssignments.map((vols,i)=>{
-    const volList=vols.map(v=>{
+  // Distribute volunteers across weeks
+  const semanas=distribuirVoluntarios(nSemanas);
+
+  // Build week blocks for prompt
+  const blocosSemanas=semanas.map((vols,i)=>{
+    const lista=vols.map(v=>{
       const row=csvData[v.idx]||[];
-      const extraStr=colsExtra.map(ci=>row[ci]?`${headers[ci]}:${row[ci]}`:'').filter(Boolean).join(' ');
-      // format: Nome | celula_original | grupo | extras
-      return `  ${v.nome} | celula:${v.celula} | grupo:${v.grupo}${extraStr?' | '+extraStr:''}`;
+      const extras=colsExtra.map(ci=>row[ci]?headers[ci]+':'+row[ci]:'').filter(Boolean).join(', ');
+      return '  - '+v.nome+' (célula: '+v.celula+(extras?' | '+extras:'')+')';
     }).join('\n');
-    return `SEMANA ${i+1}${weekDates[i]?' ('+weekDates[i]+')':''} — ${vols.length} pessoas:\n${volList}`;
+    return 'SEMANA '+(i+1)+(weekDates[i]?' - '+weekDates[i]:'')+' ('+vols.length+' voluntários):\n'+lista;
   }).join('\n\n');
 
-  // Build week template outside template literal to avoid nesting issues
-  const weekTemplateArr=[];
-  for(let i=0;i<nSemanas;i++){
-    weekTemplateArr.push('{"semana":'+(i+1)+',"data":"'+(weekDates[i]||'')+'","funcoes":[]}');
-  }
-  const weekTemplate=weekTemplateArr.join(',');
+  // Build JSON template
+  const templateSemanas=semanas.map((vols,i)=>
+    '{"semana":'+(i+1)+',"data":"'+(weekDates[i]||'')+'","funcoes":[]}'
+  ).join(',');
 
-    // Build example of expected JSON structure per week
-  const funcoesList=funcoes?funcoes.split('\n').filter(Boolean).map(l=>{
-    const m=l.match(/^(.+?)\s*\((\d+)/);
-    return m?{funcao:m[1].trim(),vagas:parseInt(m[2])}:{funcao:l.trim(),vagas:1};
-  }):[{funcao:'Serviço',vagas:vagasPorCulto}];
-
-
-
-  const promptParts=[
-    'Você distribui voluntários em funções de serviço na igreja.',
+  // Build prompt lines
+  const linhas=[
+    'Você é um especialista em escalas de serviço voluntário para igrejas.',
     '',
-    'FUNÇÕES E VAGAS EXATAS POR CULTO:',
-    funcoesList.map(function(f){return '- '+f.funcao+': '+f.vagas+' pessoa(s)';}).join('\n'),
-    'Total por culto: '+funcoesList.reduce(function(s,f){return s+f.vagas;},0)+' pessoas',
+    'FUNÇÕES E VAGAS POR CULTO:',
+    funcoesList.map(f=>'- '+f.nome+': '+f.vagas+' vaga(s)').join('\n'),
     '',
-    'VOLUNTÁRIOS JÁ DISTRIBUÍDOS POR SEMANA — use SOMENTE estes em cada semana:',
-    weekBlocks,
+    'VOLUNTÁRIOS POR SEMANA (já distribuídos — use SOMENTE os da semana correspondente):',
+    blocosSemanas,
     '',
-    'TAREFA: para cada semana, atribua os voluntários listados às funções acima.',
-    '- Respeite EXATAMENTE o número de vagas por função',
-    '- Se sobrar voluntários além das vagas, distribua-os pelas funções (não omita ninguém)',
-    '- Use as informações disponíveis (sexo, idade, função declarada) para alocar',
-    '- Use os nomes EXATAMENTE como aparecem na lista (campo antes do primeiro |)',
-    '- Para "celula" de cada voluntário, use o valor do campo celula: na lista',
+    'REGRAS:',
+    '1. Para cada semana, distribua APENAS os voluntários listados naquela semana pelas funções',
+    '2. Respeite exatamente o número de vagas por função',
+    '3. Use sexo/idade/função declarada para alocar (quando disponível)',
+    '4. Se sobrar voluntários além das vagas totais, inclua-os em qualquer função',
+    obs?'5. REGRAS ESPECIAIS: '+obs:'',
     '',
-    obs ? 'REGRAS ESPECIAIS:\n'+obs+'\n' : '',
-    'Retorne SOMENTE JSON válido, sem texto fora:',
-    '{"semanas":['+weekTemplate+'],"justificativa":"2 frases"}',
+    'FORMATO DE RESPOSTA — retorne SOMENTE este JSON sem nenhum texto fora:',
+    '{"semanas":['+templateSemanas+'],"justificativa":"max 2 frases"}',
     '',
-    'Formato de cada semana: {"semana":N,"data":"DD/MM/AAAA","funcoes":[{"funcao":"NOME_FUNCAO","voluntarios":[{"nome":"NOME_EXATO","celula":"CELULA_EXATA"}]}]}',
-    'Preencha as '+nSemanas+' semanas. Use nomes exatos da lista acima.'
+    'Para cada semana, preencha "funcoes" com:',
+    '[{"funcao":"'+funcoesList[0].nome+'","voluntarios":[{"nome":"NOME EXATO","celula":"CÉLULA EXATA"},...]}]',
+    '',
+    'Use os nomes e células EXATAMENTE como aparecem na lista acima.'
   ];
-  return promptParts.filter(function(x){return x!==null&&x!==undefined;}).join('\n');
+
+  return linhas.filter(l=>l!==null&&l!==undefined).join('\n');
 }
 
 async function gerarEscala(){
@@ -966,56 +935,66 @@ function renderEscalaJSON(data){
   escalaData=data;
   const thead=document.getElementById('escala-thead');
   const tbody=document.getElementById('escala-tbody');
-  if(!thead||!tbody){ console.error('Table elements not found'); return; }
+  if(!thead||!tbody) return;
+
   const semanas=data.semanas||[];
-  // Build flat rows: {semana, data, funcao, voluntarios[]}
-  const rows=[];
-  semanas.forEach(s=>{
-    (s.funcoes||[]).forEach((f,fi)=>{
-      rows.push({semana:s.semana,data:s.data||'',funcao:f.funcao,voluntarios:f.voluntarios||[],firstOfWeek:fi===0,weekRows:(s.funcoes||[]).length});
-    });
-  });
-  // Build thead
-  thead.innerHTML=`<tr><th>Semana</th><th>Data</th><th>Função</th><th>Voluntários</th></tr>`;
-  // Build tbody
+  if(!semanas.length){ thead.innerHTML=''; tbody.innerHTML='<tr><td>Nenhuma semana gerada.</td></tr>'; return; }
+
+  // Collect all unique functions across all weeks
+  const todasFuncoes=[...new Set(semanas.flatMap(s=>(s.funcoes||[]).map(f=>f.funcao)))];
+
+  // Build header: Semana | Data | [Função1] | [Função2] | ...
+  thead.innerHTML='<tr>'
+    +'<th style="min-width:80px">Semana</th>'
+    +'<th style="min-width:80px">Data</th>'
+    +todasFuncoes.map(f=>'<th>'+f+'</th>').join('')
+    +'</tr>';
+
+  // Build one row per semana
   tbody.innerHTML='';
-  let lastWeek=-1;
-  rows.forEach(row=>{
+  semanas.forEach(s=>{
     const tr=document.createElement('tr');
-    // Week cell (rowspan)
-    if(row.semana!==lastWeek){
-      const tdW=document.createElement('td');
-      tdW.className='week-cell';
-      tdW.textContent=`Semana ${row.semana}`;
-      tdW.rowSpan=row.weekRows;
-      tr.appendChild(tdW);
-      const tdD=document.createElement('td');
-      tdD.className='date-cell';
-      tdD.textContent=row.data||'—';
-      tdD.rowSpan=row.weekRows;
-      tr.appendChild(tdD);
-      lastWeek=row.semana;
-    }
-    // Role cell
-    const tdR=document.createElement('td');
-    tdR.className='role-cell';
-    tdR.textContent=row.funcao;
-    tr.appendChild(tdR);
-    // Volunteers cell
-    const tdV=document.createElement('td');
-    if(row.voluntarios.length===0){
-      tdV.innerHTML='<span style="color:var(--text3)">—</span>';
-    } else {
-      tdV.innerHTML=row.voluntarios.map(v=>{
-        const cc=getCellColor(v.celula||'');
-        const badge=v.celula?` <span style="background:${cc.bg};border:1px solid ${cc.border};color:${cc.text};font-size:10px;padding:1px 5px;border-radius:8px;font-family:Syne,sans-serif;font-weight:700">${v.celula}</span>`:'';
-        return `<span class="vol-pill">${v.nome}${badge}</span>`;
-      }).join('');
-    }
-    tr.appendChild(tdV);
+
+    // Semana cell
+    const tdS=document.createElement('td');
+    tdS.className='week-cell';
+    tdS.textContent='Semana '+s.semana;
+    tr.appendChild(tdS);
+
+    // Data cell
+    const tdD=document.createElement('td');
+    tdD.className='date-cell';
+    tdD.textContent=s.data||'—';
+    tr.appendChild(tdD);
+
+    // One cell per function
+    todasFuncoes.forEach(fn=>{
+      const f=(s.funcoes||[]).find(x=>x.funcao===fn);
+      const td=document.createElement('td');
+      td.style.verticalAlign='top';
+      if(!f||!f.voluntarios||!f.voluntarios.length){
+        td.innerHTML='<span style="color:var(--text3);font-size:12px">—</span>';
+      } else {
+        td.innerHTML=f.voluntarios.map(v=>{
+          const cc=getCellColor(v.celula||'');
+          const badge=v.celula
+            ? '<span style="background:'+cc.bg+';border:1px solid '+cc.border+';color:'+cc.text+';font-size:10px;padding:1px 6px;border-radius:8px;font-weight:600;white-space:nowrap">'+v.celula+'</span>'
+            : '';
+          return '<div style="margin-bottom:4px;display:flex;align-items:center;gap:4px;flex-wrap:wrap">'
+            +'<span style="font-size:12px;white-space:nowrap">'+v.nome+'</span>'
+            +badge
+            +'</div>';
+        }).join('');
+      }
+      tr.appendChild(td);
+    });
+
     tbody.appendChild(tr);
   });
-  const justEl=document.getElementById('justificativa'); if(justEl) justEl.textContent=data.justificativa||'(sem justificativa)';
+
+  // Justificativa
+  const justEl=document.getElementById('justificativa');
+  if(justEl) justEl.textContent=data.justificativa||'(sem justificativa)';
 }
 
 function exportarCSV(){
