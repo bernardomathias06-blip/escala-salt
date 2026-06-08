@@ -822,20 +822,20 @@ function buildPrompt(){
   // Build per-week volunteer lists for prompt
   const weekBlocks=weekAssignments.map((vols,i)=>{
     const volList=vols.map(v=>{
-      const extra=colsExtra.map(ci=>r=>{
-        const row=csvData[v.idx];
-        return row&&row[ci]?`${headers[ci]}:${row[ci]}`:'';
-      }).filter(Boolean);
       const row=csvData[v.idx]||[];
       const extraStr=colsExtra.map(ci=>row[ci]?`${headers[ci]}:${row[ci]}`:'').filter(Boolean).join(' ');
-      return `  ${v.nome}(${v.grupo})${extraStr?' '+extraStr:''}`;
+      // format: Nome | celula_original | grupo | extras
+      return `  ${v.nome} | celula:${v.celula} | grupo:${v.grupo}${extraStr?' | '+extraStr:''}`;
     }).join('\n');
-    return `SEMANA ${i+1}${weekDates[i]?' ('+weekDates[i]+')':''} — ${vols.length} voluntários disponíveis:\n${volList}`;
+    return `SEMANA ${i+1}${weekDates[i]?' ('+weekDates[i]+')':''} — ${vols.length} pessoas:\n${volList}`;
   }).join('\n\n');
 
-  const weekTemplate=Array.from({length:nSemanas},(_,i)=>
-    `{"semana":${i+1},"data":"${weekDates[i]||''}","funcoes":[]}`
-  ).join(',');
+  // Build week template outside template literal to avoid nesting issues
+  const weekTemplateArr=[];
+  for(let i=0;i<nSemanas;i++){
+    weekTemplateArr.push('{"semana":'+(i+1)+',"data":"'+(weekDates[i]||'')+'","funcoes":[]}');
+  }
+  const weekTemplate=weekTemplateArr.join(',');
 
     // Build example of expected JSON structure per week
   const funcoesList=funcoes?funcoes.split('\n').filter(Boolean).map(l=>{
@@ -843,32 +843,38 @@ function buildPrompt(){
     return m?{funcao:m[1].trim(),vagas:parseInt(m[2])}:{funcao:l.trim(),vagas:1};
   }):[{funcao:'Serviço',vagas:vagasPorCulto}];
 
-  const exampleFuncoes=funcoesList.map(f=>
-    `{"funcao":"${f.funcao}","voluntarios":[${Array.from({length:f.vagas},(_,i)=>`{"nome":"NOME${i+1}","celula":"CELULA${i+1}"}`).join(',')}]}`
-  ).join(',');
+  const exampleFuncoes=funcoesList.map(f=>{
+    const vArr=[];
+    for(let i=0;i<f.vagas;i++) vArr.push('{"nome":"NOME'+(i+1)+'","celula":"CELULA'+(i+1)+'"}');
+    return '{"funcao":"'+f.funcao+'","voluntarios":['+vArr.join(',')+']}'
+  }).join(',');
 
-  return `Você distribui voluntários em funções de serviço na igreja.
-
-FUNÇÕES E VAGAS EXATAS POR CULTO:
-${funcoesList.map(f=>`- ${f.funcao}: ${f.vagas} pessoa(s)`).join('\n')}
-Total por culto: ${funcoesList.reduce((s,f)=>s+f.vagas,0)} pessoas
-
-VOLUNTÁRIOS JÁ DISTRIBUÍDOS POR SEMANA — use SOMENTE estes em cada semana:
-${weekBlocks}
-
-TAREFA: atribua cada voluntário de cada semana a uma das funções acima.
-- Respeite EXATAMENTE o número de vagas por função
-- Se sobrar voluntários além das vagas, coloque os extras em "voluntarios":[] de qualquer função (não omita)
-- Use sexo/idade/função declarada para escolher quem vai em qual função
-- Use os nomes EXATAMENTE como aparecem na lista
-
-${obs?`REGRAS ESPECIAIS:\n${obs}\n`:''}
-
-Retorne SOMENTE este JSON sem nenhum texto fora (preencha para todas as ${nSemanas} semanas):
-{"semanas":[${weekTemplate}],"justificativa":"2 frases"}
-
-Exemplo de estrutura de uma semana:
-{"semana":1,"data":"","funcoes":[${exampleFuncoes}]}`;
+  const promptParts=[
+    'Você distribui voluntários em funções de serviço na igreja.',
+    '',
+    'FUNÇÕES E VAGAS EXATAS POR CULTO:',
+    funcoesList.map(function(f){return '- '+f.funcao+': '+f.vagas+' pessoa(s)';}).join('\n'),
+    'Total por culto: '+funcoesList.reduce(function(s,f){return s+f.vagas;},0)+' pessoas',
+    '',
+    'VOLUNTÁRIOS JÁ DISTRIBUÍDOS POR SEMANA — use SOMENTE estes em cada semana:',
+    weekBlocks,
+    '',
+    'TAREFA: para cada semana, atribua os voluntários listados às funções acima.',
+    '- Respeite EXATAMENTE o número de vagas por função',
+    '- Se sobrar voluntários além das vagas, distribua-os pelas funções (não omita ninguém)',
+    '- Use as informações disponíveis (sexo, idade, função declarada) para alocar',
+    '- Use os nomes EXATAMENTE como aparecem na lista (campo antes do primeiro |)',
+    '- Para "celula" de cada voluntário, use o valor do campo celula: na lista',
+    '',
+    obs ? 'REGRAS ESPECIAIS:\n'+obs+'\n' : '',
+    'Retorne SOMENTE JSON válido, sem texto fora:',
+    '{"semanas":['+weekTemplate+'],"justificativa":"2 frases"}',
+    '',
+    'Exemplo de como preencher uma semana:',
+    '{"semana":1,"data":"","funcoes":['+exampleFuncoes+']}',
+    'Preencha todas as '+nSemanas+' semanas. Nomes exatos da lista.'
+  ];
+  return promptParts.filter(function(x){return x!==null&&x!==undefined;}).join('\n');
 }
 
 async function gerarEscala(){
