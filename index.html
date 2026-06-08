@@ -583,6 +583,10 @@ select option{background:var(--surface2)}
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
           Copiar texto
         </button>
+        <button class="btn btn-primary" onclick="exportarCSV()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Exportar CSV
+        </button>
       </div>
     </div>
 
@@ -764,21 +768,11 @@ CRITÉRIOS: 1)Mesma célula no mesmo domingo(prioridade máxima) 2)Ninguém serv
 
 ${obs?`REGRAS ESPECIAIS:\n${obs}\n`:''}
 
-FORMATO DE SAÍDA OBRIGATÓRIO — use exatamente este formato:
+FORMATO: responda SOMENTE com JSON válido, sem texto fora do JSON, sem markdown.
+Estrutura obrigatória:
+{"semanas":[{"semana":1,"data":"","funcoes":[{"funcao":"Nome da Função","voluntarios":[{"nome":"Nome Exato","celula":"Célula"}]}]}],"justificativa":"texto"}
 
-=== SEMANA 1${weekDates[0]?' — '+weekDates[0]:''} ===
-[Função]: [Nome (Célula)] | [Nome (Célula)]
-[Função]: [Nome (Célula)]
-
-=== SEMANA 2${weekDates[1]?' — '+weekDates[1]:''} ===
-[Função]: [Nome (Célula)] | [Nome (Célula)]
-
-(continue para todas as ${semanas} semanas)
-
-JUSTIFICATIVA:
-(3-5 frases explicando as decisões de agrupamento, distribuição e equilíbrio)
-
-Use apenas nomes exatos da lista acima.`;
+Gere ${semanas} semanas. Use datas: ${weekDates.join(', ')||'sem data'}. Use apenas nomes exatos da lista acima. SOMENTE JSON.`;
 }
 
 async function gerarEscala(){
@@ -800,10 +794,19 @@ async function gerarEscala(){
     });
     const data=await resp.json();
     if(data.error) throw new Error(data.error?.message||JSON.stringify(data.error));
-    const text=data.choices?.[0]?.message?.content||'';
-    escalaTexto=text;
+    const raw=data.choices?.[0]?.message?.content||'';
+    escalaTexto=raw;
+    // Parse JSON response
+    let escalaJSON=null;
+    try{
+      const clean=raw.replace(/```json|```/g,'').trim();
+      escalaJSON=JSON.parse(clean);
+    }catch(e){
+      // fallback to text render if JSON fails
+    }
     stopLoading();
-    renderEscala(text);
+    if(escalaJSON) renderEscalaJSON(escalaJSON);
+    else renderEscala(raw);
     document.getElementById('loading-wrap').style.display='none';
     document.getElementById('result-wrap').style.display='block';
   }catch(e){
@@ -866,6 +869,65 @@ function renderEscala(text){
     container.appendChild(block);
   }
   document.getElementById('justificativa').textContent=justRaw||'(sem justificativa)';
+}
+
+let escalaData=null; // store parsed JSON for export
+
+function renderEscalaJSON(data){
+  escalaData=data;
+  const container=document.getElementById('escala-visual');
+  container.innerHTML='';
+  (data.semanas||[]).forEach(s=>{
+    const block=document.createElement('div');
+    block.className='week-block';
+    const label=s.data?`SEMANA ${s.semana} — ${s.data}`:`SEMANA ${s.semana}`;
+    const names=new Set();
+    let rowsHtml='';
+    (s.funcoes||[]).forEach(f=>{
+      const chips=(f.voluntarios||[]).map(v=>{
+        names.add(v.nome);
+        const cc=getCellColor(v.celula||'');
+        const badge=v.celula?`<span class="cell-badge" style="background:${cc.bg};border:1px solid ${cc.border};color:${cc.text}">${v.celula}</span>`:'';
+        return `<span class="vol-chip">${v.nome}${badge}</span>`;
+      }).join('');
+      rowsHtml+=`<div class="role-row"><span class="role-label">${f.funcao}</span><div class="vol-chips">${chips||'<span style="color:var(--text3)">—</span>'}</div></div>`;
+    });
+    block.innerHTML=`<div class="week-header"><span>${label}</span><span class="week-count">${names.size} voluntário${names.size!==1?'s':''}</span></div><div class="week-body">${rowsHtml}</div>`;
+    container.appendChild(block);
+  });
+  document.getElementById('justificativa').textContent=data.justificativa||'(sem justificativa)';
+}
+
+function exportarCSV(){
+  if(!escalaData){
+    // fallback: export raw text
+    const blob=new Blob(['﻿'+escalaTexto],{type:'text/plain;charset=utf-8'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='escala.txt';a.click();
+    return;
+  }
+  const evento=document.getElementById('evento').value||'Culto';
+  const rows=[['Semana','Data','Função','Voluntário','Célula']];
+  (escalaData.semanas||[]).forEach(s=>{
+    (s.funcoes||[]).forEach(f=>{
+      if(!f.voluntarios||f.voluntarios.length===0){
+        rows.push([`Semana ${s.semana}`,s.data||'',f.funcao,'','']);
+      } else {
+        f.voluntarios.forEach(v=>{
+          rows.push([`Semana ${s.semana}`,s.data||'',f.funcao,v.nome||'',v.celula||'']);
+        });
+      }
+    });
+  });
+  const csv=rows.map(r=>r.map(c=>'"'+String(c).replace(/"/g,'""')+'"').join(',')).join('\n');
+  const blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`escala_${evento.replace(/\s+/g,'_')}.csv`;
+  a.click();
+  const t=document.getElementById('toast');
+  t.textContent='CSV exportado!';
+  t.classList.add('show');
+  setTimeout(()=>{t.classList.remove('show');t.textContent='Copiado!';},2200);
 }
 
 function copiarEscala(){
