@@ -736,54 +736,56 @@ function normalizeCelula(raw){
   return s.split(/\s+/)[0];
 }
 
-// Pre-assign volunteers to weeks algorithmically before sending to AI
+// Pre-assign volunteers to weeks — balanced round-robin by cell group
 function preAssignWeeks(nSemanas, vagasPorCulto){
-  // Group volunteers by cell prefix
+  // Group volunteers by cell prefix, preserving original index
   const groups={};
   csvData.forEach((r,idx)=>{
-    const nome=colName>=0?r[colName]:'?';
-    const celula=colCell>=0?r[colCell]:'';
+    const nome=(colName>=0?r[colName]:null)||'?';
+    const celula=(colCell>=0?r[colCell]:null)||'';
     const grupo=normalizeCelula(celula)||'Outros';
     if(!groups[grupo]) groups[grupo]=[];
     groups[grupo].push({nome,celula,grupo,idx});
   });
 
-  // Sort groups by size descending so larger groups get distributed first
   const sortedGroups=Object.values(groups).sort((a,b)=>b.length-a.length);
+  const slots=Array.from({length:nSemanas},()=>[]); // one slot per week
 
-  // Assign groups to weeks round-robin
-  const weekAssignments=Array.from({length:nSemanas},()=>[]); // array of volunteer arrays
-  let weekIdx=0;
+  // Distribute each group across weeks, keeping same-group people together
+  // Use a rotating pointer so groups spread evenly
+  let ptr=0;
   sortedGroups.forEach(group=>{
-    // Split large groups across weeks if needed
-    const chunkSize=Math.ceil(group.length/Math.max(1,Math.ceil(group.length/(vagasPorCulto||10))));
-    for(let i=0;i<group.length;i+=chunkSize){
-      const chunk=group.slice(i,i+chunkSize);
-      weekAssignments[weekIdx%nSemanas].push(...chunk);
-      weekIdx++;
+    // If group is larger than vagasPorCulto, split across multiple weeks
+    const maxPerWeek=Math.max(1, vagasPorCulto);
+    const chunks=[];
+    for(let i=0;i<group.length;i+=maxPerWeek){
+      chunks.push(group.slice(i,i+maxPerWeek));
     }
+    chunks.forEach(chunk=>{
+      // find the week with fewest people starting from ptr
+      let best=0;
+      let bestLen=Infinity;
+      for(let i=0;i<nSemanas;i++){
+        const wi=(ptr+i)%nSemanas;
+        if(slots[wi].length<bestLen){bestLen=slots[wi].length;best=wi;}
+      }
+      slots[best].push(...chunk);
+      ptr=(best+1)%nSemanas;
+    });
   });
 
-  // Balance: if any week is too heavy, move excess to lighter weeks
+  // Final rebalance: move people from heaviest to lightest until balanced
   const target=Math.ceil(csvData.length/nSemanas);
-  let changed=true;
-  let passes=0;
-  while(changed && passes<10){
-    changed=false;passes++;
-    for(let i=0;i<nSemanas;i++){
-      if(weekAssignments[i].length>target+2){
-        // find lightest week
-        const lightest=weekAssignments.reduce((mi,w,wi)=>w.length<weekAssignments[mi].length?wi:mi,0);
-        if(lightest!==i){
-          const moved=weekAssignments[i].splice(weekAssignments[i].length-1,1);
-          weekAssignments[lightest].push(...moved);
-          changed=true;
-        }
-      }
-    }
+  for(let pass=0;pass<20;pass++){
+    const maxIdx=slots.reduce((mi,s,i)=>s.length>slots[mi].length?i:mi,0);
+    const minIdx=slots.reduce((mi,s,i)=>s.length<slots[mi].length?i:mi,0);
+    if(slots[maxIdx].length-slots[minIdx].length<=1) break;
+    // move last person from max to min (try not to break group cohesion)
+    const moved=slots[maxIdx].splice(slots[maxIdx].length-1,1);
+    slots[minIdx].push(...moved);
   }
 
-  return weekAssignments;
+  return slots;
 }
 
 function buildPrompt(){
@@ -835,25 +837,38 @@ function buildPrompt(){
     `{"semana":${i+1},"data":"${weekDates[i]||''}","funcoes":[]}`
   ).join(',');
 
-  return `Monte uma escala de serviço voluntário. Os voluntários já foram pré-distribuídos por semana com base no agrupamento de células. Sua tarefa é APENAS atribuir as funções corretas dentro de cada semana.
+    // Build example of expected JSON structure per week
+  const funcoesList=funcoes?funcoes.split('\n').filter(Boolean).map(l=>{
+    const m=l.match(/^(.+?)\s*\((\d+)/);
+    return m?{funcao:m[1].trim(),vagas:parseInt(m[2])}:{funcao:l.trim(),vagas:1};
+  }):[{funcao:'Serviço',vagas:vagasPorCulto}];
 
-FUNÇÕES E VAGAS POR CULTO (respeite exatamente estas quantidades):
-${funcoes||`~${vagasPorCulto} voluntários por semana`}
+  const exampleFuncoes=funcoesList.map(f=>
+    `{"funcao":"${f.funcao}","voluntarios":[${Array.from({length:f.vagas},(_,i)=>`{"nome":"NOME${i+1}","celula":"CELULA${i+1}"}`).join(',')}]}`
+  ).join(',');
 
-VOLUNTÁRIOS POR SEMANA (já distribuídos — use APENAS os voluntários listados em cada semana):
+  return `Você distribui voluntários em funções de serviço na igreja.
+
+FUNÇÕES E VAGAS EXATAS POR CULTO:
+${funcoesList.map(f=>`- ${f.funcao}: ${f.vagas} pessoa(s)`).join('\n')}
+Total por culto: ${funcoesList.reduce((s,f)=>s+f.vagas,0)} pessoas
+
+VOLUNTÁRIOS JÁ DISTRIBUÍDOS POR SEMANA — use SOMENTE estes em cada semana:
 ${weekBlocks}
 
-INSTRUÇÕES:
-1. Para cada semana, use SOMENTE os voluntários listados naquela semana
-2. Respeite exatamente o número de vagas por função
-3. Distribua as funções considerando os dados disponíveis (sexo, idade, função declarada)
-4. O grupo entre () indica a célula — voluntários do mesmo grupo já estão na mesma semana
+TAREFA: atribua cada voluntário de cada semana a uma das funções acima.
+- Respeite EXATAMENTE o número de vagas por função
+- Se sobrar voluntários além das vagas, coloque os extras em "voluntarios":[] de qualquer função (não omita)
+- Use sexo/idade/função declarada para escolher quem vai em qual função
+- Use os nomes EXATAMENTE como aparecem na lista
 
 ${obs?`REGRAS ESPECIAIS:\n${obs}\n`:''}
 
-Retorne SOMENTE JSON válido sem texto fora:
-{"semanas":[${weekTemplate}],"justificativa":"explique em 2 frases"}
-Use nomes exatos. Preencha todas as ${nSemanas} semanas.`;
+Retorne SOMENTE este JSON sem nenhum texto fora (preencha para todas as ${nSemanas} semanas):
+{"semanas":[${weekTemplate}],"justificativa":"2 frases"}
+
+Exemplo de estrutura de uma semana:
+{"semana":1,"data":"","funcoes":[${exampleFuncoes}]}`;
 }
 
 async function gerarEscala(){
