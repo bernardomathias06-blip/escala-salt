@@ -796,6 +796,7 @@ function buildPrompt(){
 
   // Distribute volunteers across weeks
   const semanas=distribuirVoluntarios(nSemanas);
+  weekAssignmentsGlobal=semanas; // save for fallback rendering
 
   // Build week blocks for prompt
   const blocosSemanas=semanas.map((vols,i)=>{
@@ -947,6 +948,7 @@ function renderEscala(text){
 }
 
 let escalaData=null; // store parsed JSON for export
+let weekAssignmentsGlobal=null; // store week pre-assignments for fallback render
 
 function renderEscalaJSON(data){
   escalaData=data;
@@ -954,64 +956,79 @@ function renderEscalaJSON(data){
   const tbody=document.getElementById('escala-tbody');
   if(!thead||!tbody) return;
 
-  const semanas=data.semanas||[];
-  if(!semanas.length){ thead.innerHTML=''; tbody.innerHTML='<tr><td>Nenhuma semana gerada.</td></tr>'; return; }
+  const semanas=(data.semanas||[]).filter(s=>s&&typeof s==='object');
+  if(!semanas.length){
+    thead.innerHTML='<tr><th>Aviso</th></tr>';
+    tbody.innerHTML='<tr><td style="padding:16px;color:var(--text2)">Nenhuma semana encontrada no JSON. Tente regenerar.</td></tr>';
+    return;
+  }
 
-  // Collect all unique functions across all weeks
-  const todasFuncoes=[...new Set(semanas.flatMap(s=>(s.funcoes||[]).map(f=>f.funcao)))];
-
-  // Build header: Semana | Data | [Função1] | [Função2] | ...
-  thead.innerHTML='<tr>'
-    +'<th style="min-width:80px">Semana</th>'
-    +'<th style="min-width:80px">Data</th>'
-    +todasFuncoes.map(f=>'<th>'+f+'</th>').join('')
-    +'</tr>';
-
-  // Build one row per semana
-  tbody.innerHTML='';
-  semanas.forEach(s=>{
-    const tr=document.createElement('tr');
-
-    // Semana cell
-    const tdS=document.createElement('td');
-    tdS.className='week-cell';
-    tdS.textContent='Semana '+s.semana;
-    tr.appendChild(tdS);
-
-    // Data cell
-    const tdD=document.createElement('td');
-    tdD.className='date-cell';
-    tdD.textContent=s.data||'—';
-    tr.appendChild(tdD);
-
-    // One cell per function
-    todasFuncoes.forEach(fn=>{
-      const f=(s.funcoes||[]).find(x=>x.funcao===fn);
-      const td=document.createElement('td');
-      td.style.verticalAlign='top';
-      if(!f||!f.voluntarios||!f.voluntarios.length){
-        td.innerHTML='<span style="color:var(--text3);font-size:12px">—</span>';
-      } else {
-        td.innerHTML=f.voluntarios.map(v=>{
+  // Check if any week has funcoes filled
+  const temFuncoes=semanas.some(s=>(s.funcoes||[]).some(f=>(f.voluntarios||[]).length>0));
+  if(!temFuncoes){
+    // IA returned empty funcoes - render volunteers directly from pre-assignment
+    thead.innerHTML='<tr><th style="min-width:80px">Semana</th><th style="min-width:80px">Data</th><th>Voluntários escalados</th></tr>';
+    tbody.innerHTML='';
+    semanas.forEach(s=>{
+      const tr=document.createElement('tr');
+      const tdS=document.createElement('td'); tdS.className='week-cell'; tdS.textContent='Semana '+s.semana; tr.appendChild(tdS);
+      const tdD=document.createElement('td'); tdD.className='date-cell'; tdD.textContent=s.data||'—'; tr.appendChild(tdD);
+      const tdV=document.createElement('td');
+      // fallback: show all volunteers from pre-assignment for this week
+      const weekVols=weekAssignmentsGlobal&&weekAssignmentsGlobal[s.semana-1];
+      if(weekVols&&weekVols.length){
+        tdV.innerHTML=weekVols.map(v=>{
           const cc=getCellColor(v.celula||'');
-          const badge=v.celula
-            ? '<span style="background:'+cc.bg+';border:1px solid '+cc.border+';color:'+cc.text+';font-size:10px;padding:1px 6px;border-radius:8px;font-weight:600;white-space:nowrap">'+v.celula+'</span>'
-            : '';
-          return '<div style="margin-bottom:4px;display:flex;align-items:center;gap:4px;flex-wrap:wrap">'
-            +'<span style="font-size:12px;white-space:nowrap">'+v.nome+'</span>'
-            +badge
+          return '<div style="margin-bottom:3px;display:flex;align-items:center;gap:4px">'
+            +'<span style="font-size:12px">'+v.nome+'</span>'
+            +(v.celula?'<span style="background:'+cc.bg+';border:1px solid '+cc.border+';color:'+cc.text+';font-size:10px;padding:1px 6px;border-radius:8px;font-weight:600">'+v.celula+'</span>':'')
             +'</div>';
         }).join('');
+      } else {
+        // use funcoes even if empty structure
+        tdV.innerHTML='<span style="color:var(--text3);font-size:12px">Sem alocação</span>';
       }
-      tr.appendChild(td);
+      tr.appendChild(tdV); tbody.appendChild(tr);
     });
+  } else {
+    // Normal render: pivot table funcao x semana
+    const todasFuncoes=[...new Set(semanas.flatMap(s=>(s.funcoes||[]).map(f=>f.funcao).filter(Boolean)))];
+    thead.innerHTML='<tr>'
+      +'<th style="min-width:80px">Semana</th>'
+      +'<th style="min-width:80px">Data</th>'
+      +todasFuncoes.map(f=>'<th>'+f+'</th>').join('')
+      +'</tr>';
+    tbody.innerHTML='';
+    semanas.forEach(s=>{
+      const tr=document.createElement('tr');
+      const tdS=document.createElement('td'); tdS.className='week-cell'; tdS.textContent='Semana '+s.semana; tr.appendChild(tdS);
+      const tdD=document.createElement('td'); tdD.className='date-cell'; tdD.textContent=s.data||'—'; tr.appendChild(tdD);
+      todasFuncoes.forEach(fn=>{
+        const f=(s.funcoes||[]).find(x=>x.funcao===fn);
+        const td=document.createElement('td'); td.style.verticalAlign='top';
+        if(!f||!(f.voluntarios||[]).length){
+          td.innerHTML='<span style="color:var(--text3);font-size:12px">—</span>';
+        } else {
+          td.innerHTML=(f.voluntarios||[]).map(v=>{
+            const cc=getCellColor(v.celula||'');
+            return '<div style="margin-bottom:4px;display:flex;align-items:center;gap:4px;flex-wrap:wrap">'
+              +'<span style="font-size:12px;white-space:nowrap">'+v.nome+'</span>'
+              +(v.celula?'<span style="background:'+cc.bg+';border:1px solid '+cc.border+';color:'+cc.text+';font-size:10px;padding:1px 6px;border-radius:8px;font-weight:600">'+v.celula+'</span>':'')
+              +'</div>';
+          }).join('');
+        }
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+  }
 
-    tbody.appendChild(tr);
-  });
-
-  // Justificativa
+  // Justificativa - only show if it's actual text, not JSON
   const justEl=document.getElementById('justificativa');
-  if(justEl) justEl.textContent=data.justificativa||'(sem justificativa)';
+  if(justEl){
+    const j=data.justificativa||'';
+    justEl.textContent=(j.includes('{')&&j.includes('semana'))?'(ver tabela acima)':j||'(sem justificativa)';
+  }
 }
 
 function exportarCSV(){
