@@ -930,48 +930,23 @@ function getCellColor(cell){
 }
 
 function renderEscala(text){
-  const jIdx=text.indexOf('JUSTIFICATIVA:');
-  const escalaRaw=jIdx>=0?text.slice(0,jIdx):text;
-  const justRaw=jIdx>=0?text.slice(jIdx+14).trim():'';
-  const parts=escalaRaw.split(/===/).map(s=>s.trim()).filter(Boolean);
-  const container=document.getElementById('escala-visual');
-  container.innerHTML='';
-  for(let i=0;i<parts.length;i+=2){
-    const header=parts[i]||'';
-    const body=parts[i+1]||'';
-    if(!header) continue;
-    const block=document.createElement('div');
-    block.className='week-block';
-    let rowsHtml='';
-    const names=new Set();
-    body.split('\n').forEach(line=>{
-      const clean=line.trim();
-      if(!clean) return;
-      const colon=clean.indexOf(':');
-      if(colon<0) return;
-      const role=clean.slice(0,colon).trim();
-      const people=clean.slice(colon+1).split('|').map(p=>p.trim()).filter(Boolean);
-      const chips=people.map(p=>{
-        const m=p.match(/\(([^)]+)\)/);
-        const cell=m?m[1]:'';
-        const nome=m?p.replace(/\s*\([^)]+\)/,'').trim():p;
-        names.add(nome);
-        const cc=getCellColor(cell);
-        const badge=cell?`<span class="cell-badge" style="background:${cc.bg};border:1px solid ${cc.border};color:${cc.text}">${cell}</span>`:'';
-        return `<span class="vol-chip">${nome}${badge}</span>`;
-      }).join('');
-      rowsHtml+=`<div class="role-row"><span class="role-label">${role}</span><div class="vol-chips">${chips}</div></div>`;
-    });
-    block.innerHTML=`<div class="week-header"><span>${header}</span><span class="week-count">${names.size} voluntário${names.size!==1?'s':''}</span></div><div class="week-body">${rowsHtml||'<span style="color:var(--text3);font-size:13px">Nenhuma alocação</span>'}</div>`;
-    container.appendChild(block);
-  }
-  document.getElementById('justificativa').textContent=justRaw||'(sem justificativa)';
+  // Fallback: display raw text in the table as a single cell
+  const thead=document.getElementById('escala-thead');
+  const tbody=document.getElementById('escala-tbody');
+  const just=document.getElementById('justificativa');
+  if(!thead||!tbody) return;
+  thead.innerHTML='<tr><th>Resposta da IA</th></tr>';
+  tbody.innerHTML='<tr><td style="white-space:pre-wrap;font-size:12px;line-height:1.7;color:var(--text2)">'+text.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</td></tr>';
+  if(just) just.textContent='(resposta não estruturada — tente regenerar)';
 }
 
 let escalaData=null; // store parsed JSON for export
 
 function renderEscalaJSON(data){
   escalaData=data;
+  const thead=document.getElementById('escala-thead');
+  const tbody=document.getElementById('escala-tbody');
+  if(!thead||!tbody){ console.error('Table elements not found'); return; }
   const semanas=data.semanas||[];
   // Build flat rows: {semana, data, funcao, voluntarios[]}
   const rows=[];
@@ -981,10 +956,8 @@ function renderEscalaJSON(data){
     });
   });
   // Build thead
-  const thead=document.getElementById('escala-thead');
   thead.innerHTML=`<tr><th>Semana</th><th>Data</th><th>Função</th><th>Voluntários</th></tr>`;
   // Build tbody
-  const tbody=document.getElementById('escala-tbody');
   tbody.innerHTML='';
   let lastWeek=-1;
   rows.forEach(row=>{
