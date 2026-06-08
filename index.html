@@ -640,7 +640,10 @@ async function loadData(){
     }catch(e){errEl.innerHTML=`<div class="error-box">${e.message}</div>`;return;}
   }
   if(!raw){errEl.innerHTML='<div class="error-box">Cole os dados CSV ou insira a URL.</div>';return;}
-  const lines=raw.trim().split('\n').map(l=>parseCSVLine(l));
+  // Auto-detect delimiter: semicolon (pt-BR Sheets), comma, or tab
+  const firstLine=raw.trim().split('\n')[0];
+  const delim = firstLine.includes(';') ? ';' : firstLine.includes('\t') ? '\t' : ',';
+  const lines=raw.trim().split('\n').map(l=>parseCSVLine(l, delim));
   if(lines.length<2){errEl.innerHTML='<div class="error-box">Dados insuficientes.</div>';return;}
   headers=lines[0];
   csvData=lines.slice(1).filter(r=>r.some(c=>c));
@@ -650,12 +653,12 @@ async function loadData(){
   renderTags(); renderPreview(); goStep(2);
 }
 
-function parseCSVLine(line){
+function parseCSVLine(line, delim=','){
   const res=[];let cur='',inQ=false;
   for(let i=0;i<line.length;i++){
     const c=line[i];
     if(c==='"'){inQ=!inQ;}
-    else if(c===','&&!inQ){res.push(cur.trim());cur='';}
+    else if(c===delim&&!inQ){res.push(cur.trim());cur='';}
     else cur+=c;
   }
   res.push(cur.trim());
