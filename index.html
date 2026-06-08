@@ -420,8 +420,8 @@ select option{background:var(--surface2)}
   <div style="display:flex;align-items:center;gap:8px;width:100%">
     <label style="margin:0;white-space:nowrap">Modelo</label>
     <select id="model-select" style="margin:0;flex:1;min-width:180px;font-size:12px;padding:7px 10px">
-      <option value="llama-3.1-8b-instant">Llama 3.1 8B — rápido, 128k ctx (recomendado)</option>
-      <option value="llama-3.3-70b-versatile">Llama 3.3 70B — melhor qualidade, 12k ctx</option>
+      <option value="llama-3.3-70b-versatile">Llama 3.3 70B — melhor qualidade em JSON (recomendado)</option>
+      <option value="llama-3.1-8b-instant">Llama 3.1 8B — rápido, 128k ctx (planilhas grandes)</option>
       <option value="gemma2-9b-it">Gemma 2 9B — alternativo</option>
     </select>
   </div>
@@ -843,11 +843,7 @@ function buildPrompt(){
     return m?{funcao:m[1].trim(),vagas:parseInt(m[2])}:{funcao:l.trim(),vagas:1};
   }):[{funcao:'Serviço',vagas:vagasPorCulto}];
 
-  const exampleFuncoes=funcoesList.map(f=>{
-    const vArr=[];
-    for(let i=0;i<f.vagas;i++) vArr.push('{"nome":"NOME'+(i+1)+'","celula":"CELULA'+(i+1)+'"}');
-    return '{"funcao":"'+f.funcao+'","voluntarios":['+vArr.join(',')+']}'
-  }).join(',');
+
 
   const promptParts=[
     'Você distribui voluntários em funções de serviço na igreja.',
@@ -870,9 +866,8 @@ function buildPrompt(){
     'Retorne SOMENTE JSON válido, sem texto fora:',
     '{"semanas":['+weekTemplate+'],"justificativa":"2 frases"}',
     '',
-    'Exemplo de como preencher uma semana:',
-    '{"semana":1,"data":"","funcoes":['+exampleFuncoes+']}',
-    'Preencha todas as '+nSemanas+' semanas. Nomes exatos da lista.'
+    'Formato de cada semana: {"semana":N,"data":"DD/MM/AAAA","funcoes":[{"funcao":"NOME_FUNCAO","voluntarios":[{"nome":"NOME_EXATO","celula":"CELULA_EXATA"}]}]}',
+    'Preencha as '+nSemanas+' semanas. Use nomes exatos da lista acima.'
   ];
   return promptParts.filter(function(x){return x!==null&&x!==undefined;}).join('\n');
 }
@@ -892,7 +887,7 @@ async function gerarEscala(){
     const resp=await fetch('https://api.groq.com/openai/v1/chat/completions',{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+apiKey},
-      body:JSON.stringify({model:document.getElementById('model-select').value,max_tokens:2500,response_format:{type:'json_object'},messages:[{role:'system',content:'Você é um assistente que responde SOMENTE com JSON válido, sem nenhum texto fora do JSON.'},{role:'user',content:prompt}]})
+      body:JSON.stringify({model:document.getElementById('model-select').value,max_tokens:2500,messages:[{role:'system',content:'Você é um assistente especializado em escalas de voluntários. Responda SEMPRE com JSON válido e nada mais. Nunca inclua texto, explicações ou markdown fora do JSON.'},{role:'user',content:prompt}]})
     });
     const data=await resp.json();
     if(data.error) throw new Error(data.error?.message||JSON.stringify(data.error));
