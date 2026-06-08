@@ -408,6 +408,14 @@ select option{background:var(--surface2)}
     <label>Chave API Groq (gratuita)</label>
     <input type="password" id="api-key" placeholder="gsk_..." oninput="saveKey()" />
     <div class="api-status" id="api-status">Gratuita — plano free generoso. Obtenha em console.groq.com → API Keys</div>
+  <div style="display:flex;align-items:center;gap:8px;width:100%">
+    <label style="margin:0;white-space:nowrap">Modelo</label>
+    <select id="model-select" style="margin:0;flex:1;min-width:180px;font-size:12px;padding:7px 10px">
+      <option value="llama-3.1-8b-instant">Llama 3.1 8B — rápido, 128k ctx (recomendado)</option>
+      <option value="llama-3.3-70b-versatile">Llama 3.3 70B — melhor qualidade, 12k ctx</option>
+      <option value="gemma2-9b-it">Gemma 2 9B — alternativo</option>
+    </select>
+  </div>
   </div>
 
   <!-- STEPPER -->
@@ -709,13 +717,20 @@ function buildPrompt(){
   const nameH=colName>=0?headers[colName]:'Nome';
   const cellH=colCell>=0?headers[colCell]:'Célula';
   const extraH=colsExtra.map(i=>headers[i]).join(', ');
+  // Only include mapped columns to reduce token count
+  const essentialCols=[
+    ...(colName>=0?[colName]:[]),
+    ...(colCell>=0?[colCell]:[]),
+    ...colsExtra
+  ];
   const linhasVol=csvData.map(r=>{
     const parts=[];
-    if(colName>=0) parts.push(`Nome: ${r[colName]||'?'}`);
-    if(colCell>=0) parts.push(`Célula: ${r[colCell]||'?'}`);
-    colsExtra.forEach(i=>{if(r[i]) parts.push(`${headers[i]}: ${r[i]}`);});
-    return parts.join(' | ');
+    if(colName>=0) parts.push(r[colName]||'?');
+    if(colCell>=0) parts.push(r[colCell]||'?');
+    colsExtra.forEach(i=>{if(r[i]) parts.push(`${headers[i]}:${r[i]}`);});
+    return parts.join(',');
   }).join('\n');
+  const volHeader=(colName>=0?[headers[colName]]:[]).concat(colCell>=0?[headers[colCell]]:[]).concat(colsExtra.map(i=>headers[i])).join(',');
 
   // Calculate week dates
   let weekDates=[];
@@ -729,7 +744,8 @@ function buildPrompt(){
 
   return `Você é um assistente especializado em montar escalas de serviço voluntário para igrejas e ministérios jovens.
 
-LISTA DE VOLUNTÁRIOS (${csvData.length} pessoas):
+VOLUNTÁRIOS (${csvData.length}):
+${volHeader}
 ${linhasVol}
 
 FUNÇÕES E VAGAS POR CULTO:
@@ -739,16 +755,9 @@ CONFIGURAÇÃO:
 - Evento: ${evento}
 - Semanas a escalar: ${semanas}
 ${weekDates.length?`- Datas: ${weekDates.join(', ')}`:''}
-- Campo de nome: ${nameH}
-- Campo de célula: ${cellH}
-${extraH?`- Outros campos disponíveis: ${extraH}`:''}
+- 1ª coluna=Nome, 2ª coluna=Célula${extraH?`, outras: ${extraH}`:''}
 
-CRITÉRIOS (ordem de prioridade):
-1. CÉLULAS JUNTAS — pessoas da mesma célula devem servir no mesmo domingo. Este é o critério mais importante. Agrupe células inteiras.
-2. DISTRIBUIÇÃO JUSTA — ninguém serve 2 semanas consecutivas. Todos servem número similar de vezes.
-3. EQUILÍBRIO DE GÊNERO — quando disponível, mesclar M e F em cada time.
-4. EQUILÍBRIO DE IDADE — quando disponível, evitar times com faixa etária homogênea em funções de responsabilidade.
-5. FUNÇÃO COMPATÍVEL — respeitar campo de função/área quando existir.
+CRITÉRIOS: 1)Mesma célula no mesmo domingo(prioridade máxima) 2)Ninguém serve 2x seguidas 3)Mesclar M/F 4)Mesclar idades 5)Respeitar função
 
 ${obs?`REGRAS ESPECIAIS:\n${obs}\n`:''}
 
@@ -766,7 +775,7 @@ FORMATO DE SAÍDA OBRIGATÓRIO — use exatamente este formato:
 JUSTIFICATIVA:
 (3-5 frases explicando as decisões de agrupamento, distribuição e equilíbrio)
 
-IMPORTANTE: Use apenas nomes exatos da lista de voluntários fornecida. Não invente nomes.`;
+Use apenas nomes exatos da lista acima.`;
 }
 
 async function gerarEscala(){
@@ -784,7 +793,7 @@ async function gerarEscala(){
     const resp=await fetch('https://api.groq.com/openai/v1/chat/completions',{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+apiKey},
-      body:JSON.stringify({model:'llama-3.3-70b-versatile',max_tokens:2500,messages:[{role:'user',content:prompt}]})
+      body:JSON.stringify({model:document.getElementById('model-select').value,max_tokens:2500,messages:[{role:'user',content:prompt}]})
     });
     const data=await resp.json();
     if(data.error) throw new Error(data.error?.message||JSON.stringify(data.error));
