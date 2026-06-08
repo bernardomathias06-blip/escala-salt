@@ -736,6 +736,56 @@ function normalizeCelula(raw){
   return s.split(/\s+/)[0];
 }
 
+// Pre-assign volunteers to weeks algorithmically before sending to AI
+function preAssignWeeks(nSemanas, vagasPorCulto){
+  // Group volunteers by cell prefix
+  const groups={};
+  csvData.forEach((r,idx)=>{
+    const nome=colName>=0?r[colName]:'?';
+    const celula=colCell>=0?r[colCell]:'';
+    const grupo=normalizeCelula(celula)||'Outros';
+    if(!groups[grupo]) groups[grupo]=[];
+    groups[grupo].push({nome,celula,grupo,idx});
+  });
+
+  // Sort groups by size descending so larger groups get distributed first
+  const sortedGroups=Object.values(groups).sort((a,b)=>b.length-a.length);
+
+  // Assign groups to weeks round-robin
+  const weekAssignments=Array.from({length:nSemanas},()=>[]); // array of volunteer arrays
+  let weekIdx=0;
+  sortedGroups.forEach(group=>{
+    // Split large groups across weeks if needed
+    const chunkSize=Math.ceil(group.length/Math.max(1,Math.ceil(group.length/(vagasPorCulto||10))));
+    for(let i=0;i<group.length;i+=chunkSize){
+      const chunk=group.slice(i,i+chunkSize);
+      weekAssignments[weekIdx%nSemanas].push(...chunk);
+      weekIdx++;
+    }
+  });
+
+  // Balance: if any week is too heavy, move excess to lighter weeks
+  const target=Math.ceil(csvData.length/nSemanas);
+  let changed=true;
+  let passes=0;
+  while(changed && passes<10){
+    changed=false;passes++;
+    for(let i=0;i<nSemanas;i++){
+      if(weekAssignments[i].length>target+2){
+        // find lightest week
+        const lightest=weekAssignments.reduce((mi,w,wi)=>w.length<weekAssignments[mi].length?wi:mi,0);
+        if(lightest!==i){
+          const moved=weekAssignments[i].splice(weekAssignments[i].length-1,1);
+          weekAssignments[lightest].push(...moved);
+          changed=true;
+        }
+      }
+    }
+  }
+
+  return weekAssignments;
+}
+
 function buildPrompt(){
   const funcoes=document.getElementById('funcoes').value.trim();
   const nSemanas=parseInt(document.getElementById('num-semanas').value)||4;
@@ -744,30 +794,18 @@ function buildPrompt(){
   const obs=document.getElementById('obs').value.trim();
   const extraH=colsExtra.map(i=>headers[i]).join(', ');
 
-  // Volunteer list with normalized cell prefix
-  const linhasVol=csvData.map(r=>{
-    const parts=[];
-    if(colName>=0) parts.push(r[colName]||'?');
-    if(colCell>=0){
-      const raw=r[colCell]||'';
-      const norm=normalizeCelula(raw);
-      parts.push(norm&&norm!==raw?`${raw}[${norm}]`:raw);
-    }
-    colsExtra.forEach(i=>{if(r[i]) parts.push(`${headers[i]}:${r[i]}`);});
-    return parts.join(',');
-  }).join('\n');
-  const volHeader=(colName>=0?[headers[colName]]:[]).concat(colCell>=0?[headers[colCell]]:[]).concat(colsExtra.map(i=>headers[i])).join(',');
-
   // Proportionality calculation
-  let totalVagasPorCulto=0;
+  let vagasPorCulto=0;
   if(funcoes){
     const matches=funcoes.match(/\((\d+)/g);
-    if(matches) totalVagasPorCulto=matches.reduce((s,m)=>s+parseInt(m.slice(1)),0);
+    if(matches) vagasPorCulto=matches.reduce((s,m)=>s+parseInt(m.slice(1)),0);
   }
-  if(!totalVagasPorCulto) totalVagasPorCulto=Math.ceil(csvData.length/nSemanas);
-  const totalVagasMes=totalVagasPorCulto*nSemanas;
+  if(!vagasPorCulto) vagasPorCulto=Math.ceil(csvData.length/nSemanas);
+  const totalVagasMes=vagasPorCulto*nSemanas;
   const mediaServicos=(totalVagasMes/csvData.length).toFixed(1);
-  const maxServicos=Math.ceil(totalVagasMes/csvData.length)+1;
+
+  // Pre-assign volunteers to weeks
+  const weekAssignments=preAssignWeeks(nSemanas,vagasPorCulto);
 
   // Week dates
   let weekDates=[];
@@ -779,42 +817,43 @@ function buildPrompt(){
     }
   }
 
+  // Build per-week volunteer lists for prompt
+  const weekBlocks=weekAssignments.map((vols,i)=>{
+    const volList=vols.map(v=>{
+      const extra=colsExtra.map(ci=>r=>{
+        const row=csvData[v.idx];
+        return row&&row[ci]?`${headers[ci]}:${row[ci]}`:'';
+      }).filter(Boolean);
+      const row=csvData[v.idx]||[];
+      const extraStr=colsExtra.map(ci=>row[ci]?`${headers[ci]}:${row[ci]}`:'').filter(Boolean).join(' ');
+      return `  ${v.nome}(${v.grupo})${extraStr?' '+extraStr:''}`;
+    }).join('\n');
+    return `SEMANA ${i+1}${weekDates[i]?' ('+weekDates[i]+')':''} — ${vols.length} voluntários disponíveis:\n${volList}`;
+  }).join('\n\n');
+
   const weekTemplate=Array.from({length:nSemanas},(_,i)=>
     `{"semana":${i+1},"data":"${weekDates[i]||''}","funcoes":[]}`
   ).join(',');
 
-  return `Monte uma escala de serviço voluntário para igreja.
+  return `Monte uma escala de serviço voluntário. Os voluntários já foram pré-distribuídos por semana com base no agrupamento de células. Sua tarefa é APENAS atribuir as funções corretas dentro de cada semana.
 
-VOLUNTÁRIOS (${csvData.length} pessoas) — formato: Nome,Célula[grupo],outros:
-${volHeader}
-${linhasVol}
+FUNÇÕES E VAGAS POR CULTO (respeite exatamente estas quantidades):
+${funcoes||`~${vagasPorCulto} voluntários por semana`}
 
-FUNÇÕES E VAGAS POR CULTO:
-${funcoes||`~${totalVagasPorCulto} voluntários por semana`}
+VOLUNTÁRIOS POR SEMANA (já distribuídos — use APENAS os voluntários listados em cada semana):
+${weekBlocks}
 
-REGRA 1 — PROPORCIONALIDADE (mais importante):
-- Total de vagas no período: ${totalVagasMes} (${totalVagasPorCulto} vagas × ${nSemanas} semanas)
-- Total de voluntários: ${csvData.length}
-- Média: cada voluntário serve ~${mediaServicos}x no período
-- Máximo permitido por voluntário: ${maxServicos}x
-- Se total de vagas < total de voluntários, nem todos servem — isso é correto e esperado
-- NÃO escale mais pessoas por culto do que as vagas especificadas
-
-REGRA 2 — AGRUPAMENTO DE CÉLULAS:
-- O nome da célula pode ser longo (ex: "Wake Faith", "Wake Path") — o prefixo entre [] é o grupo real
-- Voluntários do mesmo grupo (mesmo prefixo) devem servir no mesmo domingo sempre que possível
-
-REGRA 3 — SEM CONSECUTIVIDADE:
-- Nenhum voluntário pode servir em dois domingos seguidos
-
-REGRA 4 — EQUILÍBRIO:
-- Mesclar gêneros (M/F) e faixas etárias quando disponível
+INSTRUÇÕES:
+1. Para cada semana, use SOMENTE os voluntários listados naquela semana
+2. Respeite exatamente o número de vagas por função
+3. Distribua as funções considerando os dados disponíveis (sexo, idade, função declarada)
+4. O grupo entre () indica a célula — voluntários do mesmo grupo já estão na mesma semana
 
 ${obs?`REGRAS ESPECIAIS:\n${obs}\n`:''}
 
-Retorne SOMENTE JSON, sem texto fora:
-{"semanas":[${weekTemplate}],"justificativa":"explique em 3 frases a lógica usada"}
-Preencha cada semana respeitando as vagas exatas por função. Use nomes exatos da lista.`;
+Retorne SOMENTE JSON válido sem texto fora:
+{"semanas":[${weekTemplate}],"justificativa":"explique em 2 frases"}
+Use nomes exatos. Preencha todas as ${nSemanas} semanas.`;
 }
 
 async function gerarEscala(){
