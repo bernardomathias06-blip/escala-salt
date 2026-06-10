@@ -767,19 +767,18 @@ function startLoadingCycle(){
 
 function stopLoading(){ if(loadTimer) clearInterval(loadTimer); }
 
-// Normalize cell name to prefix group
+// ── CELL NORMALIZATION ──────────────────────────────────────────────────────
 function normalizeCelula(raw){
   if(!raw) return '';
   const prefixes=['Wake','DC','One Way','Restart','Marvel','Setor','Grupo'];
-  for(const p of prefixes){
+  for(const p of prefixes)
     if(raw.trim().toLowerCase().startsWith(p.toLowerCase())) return p;
-  }
   return raw.trim().split(/\s+/)[0];
 }
 
-// Distribute volunteers evenly across weeks, keeping cell groups together
+// ── VOLUNTEER DISTRIBUTION ──────────────────────────────────────────────────
+// Returns array of N arrays (one per week), keeping cell groups together
 function distribuirVoluntarios(nSemanas){
-  // Build groups by prefix
   const grupos={};
   csvData.forEach((r,idx)=>{
     const nome=(colName>=0?r[colName]:'')||'?';
@@ -788,25 +787,25 @@ function distribuirVoluntarios(nSemanas){
     if(!grupos[grupo]) grupos[grupo]=[];
     grupos[grupo].push({nome,celula,grupo,idx});
   });
+  // Sort groups largest first so big groups are split first
+  const lista=Object.values(grupos).sort((a,b)=>b.length-a.length);
+  const slots=Array.from({length:nSemanas},()=>[]);
+  const maxPorSlot=Math.ceil(csvData.length/nSemanas);
 
-  // Sort groups by size desc so large groups are distributed first
-  const listaGrupos=Object.values(grupos).sort((a,b)=>b.length-a.length);
-  const semanas=Array.from({length:nSemanas},()=>[]);
-
-  // Assign each group to the week with fewest people (greedy)
-  listaGrupos.forEach(grupo=>{
-    // Split group into sub-chunks if too large (max ~ceil(total/semanas) per chunk)
-    const maxChunk=Math.ceil(csvData.length/nSemanas);
-    for(let i=0;i<grupo.length;i+=maxChunk){
-      const chunk=grupo.slice(i,i+maxChunk);
-      // Find week with fewest people
-      const menor=semanas.reduce((mi,s,si)=>s.length<semanas[mi].length?si:mi,0);
-      semanas[menor].push(...chunk);
+  lista.forEach(grupo=>{
+    // Chunk group so each chunk fits one week
+    for(let i=0;i<grupo.length;i+=maxPorSlot){
+      const chunk=grupo.slice(i,i+maxPorSlot);
+      // Always put in the slot with fewest people
+      const menor=slots.reduce((mi,s,si)=>s.length<slots[mi].length?si:mi,0);
+      slots[menor].push(...chunk);
     }
   });
-
-  return semanas;
+  return slots;
 }
+
+// ── PROMPT BUILDER ──────────────────────────────────────────────────────────
+let weekAssignmentsGlobal=null;
 
 function buildPrompt(){
   const funcoesRaw=document.getElementById('funcoes').value.trim();
@@ -815,15 +814,13 @@ function buildPrompt(){
   const dataInicio=document.getElementById('data-inicio').value;
   const obs=document.getElementById('obs').value.trim();
 
-  // Parse functions and vagas
+  // Parse functions list
   const funcoesList=funcoesRaw
-    ? funcoesRaw.split('\n').filter(Boolean).map(l=>{
+    ?funcoesRaw.split('\n').filter(Boolean).map(l=>{
         const m=l.match(/^(.+?)\s*\((\d+)/);
         return m?{nome:m[1].trim(),vagas:parseInt(m[2])}:{nome:l.trim(),vagas:1};
       })
-    : [{nome:'Serviço geral',vagas:Math.ceil(csvData.length/nSemanas)}];
-
-  const vagasPorCulto=funcoesList.reduce((s,f)=>s+f.vagas,0)||Math.ceil(csvData.length/nSemanas);
+    :[{nome:'Serviço geral',vagas:Math.ceil(csvData.length/nSemanas)}];
 
   // Week dates
   const weekDates=[];
@@ -836,53 +833,54 @@ function buildPrompt(){
     }
   }
 
-  // Distribute volunteers across weeks
-  const semanas=distribuirVoluntarios(nSemanas);
-  weekAssignmentsGlobal=semanas; // save for fallback rendering
+  // Distribute and save globally for fallback
+  const slots=distribuirVoluntarios(nSemanas);
+  weekAssignmentsGlobal=slots;
 
-  // Build week blocks for prompt
-  const blocosSemanas=semanas.map((vols,i)=>{
+  // Build volunteer list per week
+  const blocos=slots.map((vols,i)=>{
     const lista=vols.map(v=>{
       const row=csvData[v.idx]||[];
-      const extras=colsExtra.map(ci=>row[ci]?headers[ci]+':'+row[ci]:'').filter(Boolean).join(', ');
-      return '  - '+v.nome+' (célula: '+v.celula+(extras?' | '+extras:'')+')';
+      const ex=colsExtra.map(ci=>row[ci]?headers[ci]+':'+row[ci]:'').filter(Boolean).join(', ');
+      return '  '+v.nome+' | '+v.celula+(ex?' | '+ex:'');
     }).join('\n');
-    return 'SEMANA '+(i+1)+(weekDates[i]?' - '+weekDates[i]:'')+' ('+vols.length+' voluntários):\n'+lista;
+    return 'SEMANA '+(i+1)+(weekDates[i]?' ('+weekDates[i]+')':'')+':\n'+lista;
   }).join('\n\n');
 
-  // Build JSON template
-  const templateSemanas=semanas.map((vols,i)=>
+  // JSON template
+  const tpl=slots.map((v,i)=>
     '{"semana":'+(i+1)+',"data":"'+(weekDates[i]||'')+'","funcoes":[]}'
   ).join(',');
 
-  // Build prompt lines
-  const linhas=[
-    'Você é um especialista em escalas de serviço voluntário para igrejas.',
-    '',
-    'FUNÇÕES E VAGAS POR CULTO:',
-    funcoesList.map(f=>'- '+f.nome+': '+f.vagas+' vaga(s)').join('\n'),
-    '',
-    'VOLUNTÁRIOS POR SEMANA (já distribuídos — use SOMENTE os da semana correspondente):',
-    blocosSemanas,
-    '',
-    'REGRAS:',
-    '1. Para cada semana, distribua APENAS os voluntários listados naquela semana pelas funções',
-    '2. Respeite exatamente o número de vagas por função',
-    '3. Use sexo/idade/função declarada para alocar (quando disponível)',
-    '4. Se sobrar voluntários além das vagas totais, inclua-os em qualquer função',
-    obs?'5. REGRAS ESPECIAIS: '+obs:'',
-    '',
-    'FORMATO DE RESPOSTA — retorne SOMENTE este JSON sem nenhum texto fora:',
-    '{"semanas":['+templateSemanas+'],"justificativa":"max 2 frases"}',
-    '',
-    'Para cada semana, preencha "funcoes" com:',
-    '[{"funcao":"'+funcoesList[0].nome+'","voluntarios":[{"nome":"NOME EXATO","celula":"CÉLULA EXATA"},...]}]',
-    '',
-    'Use os nomes e células EXATAMENTE como aparecem na lista acima.'
-  ];
+  const funcoesDesc=funcoesList.map(f=>'  '+f.nome+': '+f.vagas+' vaga(s)').join('\n');
+  const funcoesEx='['+funcoesList.map(f=>
+    '{"funcao":"'+f.nome+'","voluntarios":[{"nome":"NOME","celula":"CELULA"}]}'
+  ).join(',')+']';
 
-  return linhas.filter(l=>l!==null&&l!==undefined).join('\n');
+  return [
+    'Você monta escalas de serviço voluntário para igrejas.',
+    '',
+    'FUNÇÕES POR CULTO:',
+    funcoesDesc,
+    '',
+    'VOLUNTÁRIOS POR SEMANA (use SOMENTE os listados em cada semana):',
+    blocos,
+    '',
+    'INSTRUÇÃO: distribua os voluntários de cada semana pelas funções acima.',
+    'Respeite as vagas. Use nome e célula exatamente como aparecem.',
+    obs?'REGRAS ESPECIAIS: '+obs:'',
+    '',
+    'Responda SOMENTE com JSON, sem texto antes ou depois:',
+    '{"semanas":['+tpl+'],"justificativa":"2 frases"}',
+    '',
+    'Formato de funcoes para cada semana:',
+    funcoesEx,
+  ].filter(l=>l!==null).join('\n');
 }
+
+// ── API CALL ─────────────────────────────────────────────────────────────────
+let escalaData=null;
+let escalaTexto='';
 
 async function gerarEscala(){
   const apiKey=document.getElementById('api-key').value.trim();
@@ -894,58 +892,59 @@ async function gerarEscala(){
   document.getElementById('result-wrap').style.display='none';
   document.getElementById('gen-error').style.display='none';
   startLoadingCycle();
+
   let prompt;
   try{ prompt=buildPrompt(); }
-  catch(buildErr){
+  catch(e){
     stopLoading();
     document.getElementById('loading-wrap').style.display='none';
-    document.getElementById('gen-error').textContent='Erro ao preparar prompt: '+buildErr.message;
+    document.getElementById('gen-error').textContent='Erro ao preparar dados: '+e.message;
     document.getElementById('gen-error').style.display='block';
-    console.error('buildPrompt error:', buildErr);
     return;
   }
+
   try{
     const resp=await fetch('https://api.groq.com/openai/v1/chat/completions',{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+apiKey},
-      body:JSON.stringify({model:document.getElementById('model-select').value,max_tokens:2500,messages:[{role:'system',content:'Você é um assistente especializado em escalas de voluntários. Responda SEMPRE com JSON válido e nada mais. Nunca inclua texto, explicações ou markdown fora do JSON.'},{role:'user',content:prompt}]})
+      body:JSON.stringify({
+        model:document.getElementById('model-select').value,
+        max_tokens:3000,
+        temperature:0.2,
+        messages:[
+          {role:'system',content:'Você responde SOMENTE com JSON válido. Nunca inclua texto fora do JSON.'},
+          {role:'user',content:prompt}
+        ]
+      })
     });
     const data=await resp.json();
-    if(data.error) throw new Error(data.error?.message||JSON.stringify(data.error));
+    if(data.error) throw new Error(data.error.message||JSON.stringify(data.error));
     const raw=data.choices?.[0]?.message?.content||'';
     escalaTexto=raw;
-    // Parse JSON response — try multiple strategies
-    let escalaJSON=null;
-    try{
-      // Strategy 1: clean markdown fences and parse directly
-      let clean=raw.replace(/```json[\s\S]*?```/g,m=>m.slice(m.indexOf('\n')+1,m.lastIndexOf('```'))).trim();
-      if(clean.startsWith('```')) clean=clean.replace(/```[a-z]*/,'').replace(/```$/,'').trim();
-      // Strategy 2: extract first { ... } block if there's surrounding text
-      if(!clean.startsWith('{')){
-        const jsonStart=clean.indexOf('{');
-        const jsonEnd=clean.lastIndexOf('}');
-        if(jsonStart>=0&&jsonEnd>jsonStart) clean=clean.slice(jsonStart,jsonEnd+1);
+
+    // Robust JSON extraction
+    let parsed=null;
+    const attempts=[
+      ()=>JSON.parse(raw.trim()),
+      ()=>JSON.parse(raw.replace(/```json|```/g,'').trim()),
+      ()=>{
+        const s=raw.indexOf('{'), e=raw.lastIndexOf('}');
+        if(s>=0&&e>s) return JSON.parse(raw.slice(s,e+1));
+        throw new Error('no JSON block found');
       }
-      escalaJSON=JSON.parse(clean);
-    }catch(e){
-      console.warn('JSON parse failed:', e.message, '| Raw starts with:', raw.slice(0,100));
+    ];
+    for(const attempt of attempts){
+      try{ parsed=attempt(); if(parsed&&parsed.semanas) break; }
+      catch(e){ parsed=null; }
     }
+
     stopLoading();
     document.getElementById('loading-wrap').style.display='none';
     document.getElementById('result-wrap').style.display='block';
-    try{
-      if(escalaJSON) renderEscalaJSON(escalaJSON);
-      else renderEscala(raw);
-    }catch(renderErr){
-      console.error('Render error:', renderErr);
-      // Show raw response in table as fallback
-      const thead=document.getElementById('escala-thead');
-      const tbody=document.getElementById('escala-tbody');
-      const just=document.getElementById('justificativa');
-      if(thead) thead.innerHTML='<tr><th>Resposta bruta da IA</th></tr>';
-      if(tbody) tbody.innerHTML='<tr><td style="white-space:pre-wrap;font-size:11px;color:var(--text2)">'+raw.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</td></tr>';
-      if(just) just.textContent='Erro ao renderizar: '+renderErr.message+'. Tente regenerar.';
-    }
+
+    if(parsed&&parsed.semanas) renderTabela(parsed);
+    else renderFallback(raw);
+
   }catch(e){
     stopLoading();
     document.getElementById('loading-wrap').style.display='none';
@@ -954,6 +953,7 @@ async function gerarEscala(){
   }
 }
 
+// ── CELL COLOR ───────────────────────────────────────────────────────────────
 const cellColors=[
   {bg:'rgba(77,159,255,.15)',border:'rgba(77,159,255,.5)',text:'#4d9fff'},
   {bg:'rgba(184,244,66,.12)',border:'rgba(184,244,66,.5)',text:'#b8f442'},
@@ -962,145 +962,124 @@ const cellColors=[
   {bg:'rgba(167,139,250,.15)',border:'rgba(167,139,250,.5)',text:'#a78bfa'},
   {bg:'rgba(52,211,153,.15)',border:'rgba(52,211,153,.5)',text:'#34d399'},
 ];
-const cellColorMap={};let ci=0;
-function getCellColor(cell){
-  const k=(cell||'').toLowerCase().trim();
-  if(!cellColorMap[k]) cellColorMap[k]=cellColors[ci++%cellColors.length];
+const cellColorMap={};let cellColorIdx=0;
+function getCellColor(cel){
+  const k=normalizeCelula(cel).toLowerCase()||'outros';
+  if(!cellColorMap[k]) cellColorMap[k]=cellColors[cellColorIdx++%cellColors.length];
   return cellColorMap[k];
 }
 
-function renderEscala(text){
-  // Try once more to parse as JSON before showing raw text
-  try{
-    const jsonStart=text.indexOf('{');
-    const jsonEnd=text.lastIndexOf('}');
-    if(jsonStart>=0&&jsonEnd>jsonStart){
-      const possible=JSON.parse(text.slice(jsonStart,jsonEnd+1));
-      if(possible.semanas){renderEscalaJSON(possible);return;}
-    }
-  }catch(e){}
-  // Fallback: show in table
-  const thead=document.getElementById('escala-thead');
-  const tbody=document.getElementById('escala-tbody');
-  const just=document.getElementById('justificativa');
-  if(!thead||!tbody) return;
-  thead.innerHTML='<tr><th>Resposta da IA (não estruturada — tente regenerar)</th></tr>';
-  tbody.innerHTML='<tr><td style="white-space:pre-wrap;font-size:12px;line-height:1.7;color:var(--text2);padding:16px">'+text.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</td></tr>';
-  if(just) just.textContent='';
+// ── RENDER TABLE ─────────────────────────────────────────────────────────────
+function volChip(nome, celula){
+  const cc=getCellColor(celula||'');
+  const badge=celula
+    ?'<span style="background:'+cc.bg+';border:1px solid '+cc.border+';color:'+cc.text
+      +';font-size:10px;padding:1px 7px;border-radius:8px;font-weight:600;white-space:nowrap">'
+      +celula+'</span>'
+    :'';
+  return '<div style="display:flex;align-items:center;gap:5px;margin-bottom:4px;flex-wrap:wrap">'
+    +'<span style="font-size:12px;white-space:nowrap">'+nome+'</span>'+badge+'</div>';
 }
 
-let escalaData=null; // store parsed JSON for export
-let weekAssignmentsGlobal=null; // store week pre-assignments for fallback render
-
-function renderEscalaJSON(data){
+function renderTabela(data){
   escalaData=data;
   const thead=document.getElementById('escala-thead');
   const tbody=document.getElementById('escala-tbody');
   if(!thead||!tbody) return;
 
-  const semanas=(data.semanas||[]).filter(s=>s&&typeof s==='object');
-  if(!semanas.length){
-    thead.innerHTML='<tr><th>Aviso</th></tr>';
-    tbody.innerHTML='<tr><td style="padding:16px;color:var(--text2)">Nenhuma semana encontrada no JSON. Tente regenerar.</td></tr>';
-    return;
-  }
-
-  // Check if any week has funcoes filled
+  const semanas=data.semanas||[];
+  // Collect all function names
+  const funcoes=[...new Set(semanas.flatMap(s=>(s.funcoes||[]).map(f=>f.funcao).filter(Boolean)))];
   const temFuncoes=semanas.some(s=>(s.funcoes||[]).some(f=>(f.voluntarios||[]).length>0));
-  if(!temFuncoes){
-    // IA returned empty funcoes - render volunteers directly from pre-assignment
-    thead.innerHTML='<tr><th style="min-width:80px">Semana</th><th style="min-width:80px">Data</th><th>Voluntários escalados</th></tr>';
+
+  if(!temFuncoes||!funcoes.length){
+    // Fallback: show pre-assigned volunteers without function breakdown
+    thead.innerHTML='<tr><th>Semana</th><th>Data</th><th>Voluntários</th></tr>';
     tbody.innerHTML='';
-    semanas.forEach(s=>{
+    (weekAssignmentsGlobal||[]).forEach((vols,i)=>{
+      const s=semanas[i]||{semana:i+1,data:''};
       const tr=document.createElement('tr');
-      const tdS=document.createElement('td'); tdS.className='week-cell'; tdS.textContent='Semana '+s.semana; tr.appendChild(tdS);
-      const tdD=document.createElement('td'); tdD.className='date-cell'; tdD.textContent=s.data||'—'; tr.appendChild(tdD);
-      const tdV=document.createElement('td');
-      // fallback: show all volunteers from pre-assignment for this week
-      const weekVols=weekAssignmentsGlobal&&weekAssignmentsGlobal[s.semana-1];
-      if(weekVols&&weekVols.length){
-        tdV.innerHTML=weekVols.map(v=>{
-          const cc=getCellColor(v.celula||'');
-          return '<div style="margin-bottom:3px;display:flex;align-items:center;gap:4px">'
-            +'<span style="font-size:12px">'+v.nome+'</span>'
-            +(v.celula?'<span style="background:'+cc.bg+';border:1px solid '+cc.border+';color:'+cc.text+';font-size:10px;padding:1px 6px;border-radius:8px;font-weight:600">'+v.celula+'</span>':'')
-            +'</div>';
-        }).join('');
-      } else {
-        // use funcoes even if empty structure
-        tdV.innerHTML='<span style="color:var(--text3);font-size:12px">Sem alocação</span>';
-      }
-      tr.appendChild(tdV); tbody.appendChild(tr);
+      tr.innerHTML='<td class="week-cell">Semana '+(i+1)+'</td>'
+        +'<td class="date-cell">'+(s.data||'—')+'</td>'
+        +'<td>'+vols.map(v=>volChip(v.nome,v.celula)).join('')+'</td>';
+      tbody.appendChild(tr);
     });
   } else {
-    // Normal render: pivot table funcao x semana
-    const todasFuncoes=[...new Set(semanas.flatMap(s=>(s.funcoes||[]).map(f=>f.funcao).filter(Boolean)))];
-    thead.innerHTML='<tr>'
-      +'<th style="min-width:80px">Semana</th>'
-      +'<th style="min-width:80px">Data</th>'
-      +todasFuncoes.map(f=>'<th>'+f+'</th>').join('')
-      +'</tr>';
+    thead.innerHTML='<tr><th>Semana</th><th>Data</th>'
+      +funcoes.map(f=>'<th>'+f+'</th>').join('')+'</tr>';
     tbody.innerHTML='';
     semanas.forEach(s=>{
       const tr=document.createElement('tr');
-      const tdS=document.createElement('td'); tdS.className='week-cell'; tdS.textContent='Semana '+s.semana; tr.appendChild(tdS);
-      const tdD=document.createElement('td'); tdD.className='date-cell'; tdD.textContent=s.data||'—'; tr.appendChild(tdD);
-      todasFuncoes.forEach(fn=>{
+      let cells='<td class="week-cell">Semana '+s.semana+'</td>'
+        +'<td class="date-cell">'+(s.data||'—')+'</td>';
+      funcoes.forEach(fn=>{
         const f=(s.funcoes||[]).find(x=>x.funcao===fn);
-        const td=document.createElement('td'); td.style.verticalAlign='top';
-        if(!f||!(f.voluntarios||[]).length){
-          td.innerHTML='<span style="color:var(--text3);font-size:12px">—</span>';
-        } else {
-          td.innerHTML=(f.voluntarios||[]).map(v=>{
-            const cc=getCellColor(v.celula||'');
-            return '<div style="margin-bottom:4px;display:flex;align-items:center;gap:4px;flex-wrap:wrap">'
-              +'<span style="font-size:12px;white-space:nowrap">'+v.nome+'</span>'
-              +(v.celula?'<span style="background:'+cc.bg+';border:1px solid '+cc.border+';color:'+cc.text+';font-size:10px;padding:1px 6px;border-radius:8px;font-weight:600">'+v.celula+'</span>':'')
-              +'</div>';
-          }).join('');
-        }
-        tr.appendChild(td);
+        const vols=f?.voluntarios||[];
+        cells+='<td>'+(vols.length
+          ?vols.map(v=>volChip(v.nome,v.celula)).join('')
+          :'<span style="color:var(--text3);font-size:12px">—</span>')
+          +'</td>';
       });
+      tr.innerHTML=cells;
       tbody.appendChild(tr);
     });
   }
 
-  // Justificativa - only show if it's actual text, not JSON
   const justEl=document.getElementById('justificativa');
   if(justEl){
     const j=data.justificativa||'';
-    justEl.textContent=(j.includes('{')&&j.includes('semana'))?'(ver tabela acima)':j||'(sem justificativa)';
+    justEl.textContent=(j.length>200||j.includes('"semana"'))?'(ver tabela acima)':j||'';
   }
 }
 
+function renderFallback(text){
+  const thead=document.getElementById('escala-thead');
+  const tbody=document.getElementById('escala-tbody');
+  if(!thead||!tbody) return;
+  thead.innerHTML='<tr><th>Resposta da IA (não estruturada — tente regenerar)</th></tr>';
+  tbody.innerHTML='<tr><td style="white-space:pre-wrap;font-size:12px;line-height:1.8;color:var(--text2);padding:16px">'
+    +text.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</td></tr>';
+  const justEl=document.getElementById('justificativa');
+  if(justEl) justEl.textContent='';
+}
+
+// ── EXPORT CSV ───────────────────────────────────────────────────────────────
 function exportarCSV(){
   if(!escalaData){alert('Gere a escala primeiro.');return;}
   const evento=document.getElementById('evento').value||'Culto';
-  // pivot: columns = Função names, rows = semanas
-  const funcoes=[...new Set((escalaData.semanas||[]).flatMap(s=>(s.funcoes||[]).map(f=>f.funcao)))];
-  const header=['Semana','Data',...funcoes];
-  const csvRows=[header];
-  (escalaData.semanas||[]).forEach(s=>{
-    const row=[`Semana ${s.semana}`,s.data||''];
-    funcoes.forEach(fn=>{
-      const f=(s.funcoes||[]).find(x=>x.funcao===fn);
-      const nomes=(f?.voluntarios||[]).map(v=>v.nome+(v.celula?` (${v.celula})`:''));
-      row.push(nomes.join(' | ')||'');
+  const semanas=escalaData.semanas||[];
+  const funcoes=[...new Set(semanas.flatMap(s=>(s.funcoes||[]).map(f=>f.funcao).filter(Boolean)))];
+
+  let rows;
+  if(funcoes.length){
+    rows=[['Semana','Data',...funcoes]];
+    semanas.forEach(s=>{
+      const row=['Semana '+s.semana,s.data||''];
+      funcoes.forEach(fn=>{
+        const f=(s.funcoes||[]).find(x=>x.funcao===fn);
+        row.push((f?.voluntarios||[]).map(v=>v.nome+(v.celula?' ('+v.celula+')':'')).join(' | ')||'');
+      });
+      rows.push(row);
     });
-    csvRows.push(row);
-  });
-  const csv=csvRows.map(r=>r.map(c=>'"'+String(c).replace(/"/g,'""')+'"').join(',')).join('\n');
+  } else {
+    rows=[['Semana','Data','Voluntários']];
+    (weekAssignmentsGlobal||[]).forEach((vols,i)=>{
+      rows.push(['Semana '+(i+1),(semanas[i]?.data)||'',vols.map(v=>v.nome+(v.celula?' ('+v.celula+')':'')).join(' | ')]);
+    });
+  }
+
+  const csv=rows.map(r=>r.map(c=>'"'+String(c).replace(/"/g,'""')+'"').join(',')).join('\n');
   const blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'});
   const a=document.createElement('a');
   a.href=URL.createObjectURL(blob);
-  a.download=`escala_${evento.replace(/\s+/g,'_')}.csv`;
+  a.download='escala_'+evento.replace(/\s+/g,'_')+'.csv';
   document.body.appendChild(a);a.click();document.body.removeChild(a);
   const t=document.getElementById('toast');
-  t.textContent='CSV exportado!';
-  t.classList.add('show');
+  t.textContent='CSV exportado!';t.classList.add('show');
   setTimeout(()=>{t.classList.remove('show');t.textContent='Copiado!';},2200);
 }
 
+// ── COPY ─────────────────────────────────────────────────────────────────────
 function copiarEscala(){
   navigator.clipboard.writeText(escalaTexto).then(()=>{
     const t=document.getElementById('toast');
@@ -1108,6 +1087,7 @@ function copiarEscala(){
     setTimeout(()=>t.classList.remove('show'),2200);
   }).catch(()=>alert('Selecione e copie manualmente.'));
 }
+
 
 document.getElementById('data-inicio').valueAsDate=new Date();
 </script>
