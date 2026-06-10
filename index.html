@@ -412,20 +412,16 @@ select option{background:var(--surface2)}
     </div>
   </header>
 
-  <!-- API KEY -->
-  <div class="api-section">
-    <label>Chave API Groq (gratuita)</label>
-    <input type="password" id="api-key" placeholder="gsk_..." oninput="saveKey()" />
-    <div class="api-status" id="api-status">Gratuita — plano free generoso. Obtenha em console.groq.com → API Keys</div>
-  <div style="display:flex;align-items:center;gap:8px;width:100%">
+  <!-- MODELO -->
+  <div class="api-section" style="justify-content:flex-start">
     <label style="margin:0;white-space:nowrap">Modelo</label>
     <select id="model-select" style="margin:0;flex:1;min-width:180px;font-size:12px;padding:7px 10px">
-      <option value="llama-3.3-70b-versatile">Llama 3.3 70B — melhor qualidade em JSON (recomendado)</option>
-      <option value="llama-3.1-8b-instant">Llama 3.1 8B — rápido, 128k ctx (planilhas grandes)</option>
+      <option value="llama-3.3-70b-versatile">Llama 3.3 70B — recomendado</option>
+      <option value="llama-3.1-8b-instant">Llama 3.1 8B — planilhas grandes</option>
       <option value="gemma2-9b-it">Gemma 2 9B — alternativo</option>
     </select>
   </div>
-  </div>
+  <input type="hidden" id="api-key" value="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" />
 
   <!-- STEPPER -->
   <div class="stepper">
@@ -610,13 +606,7 @@ select option{background:var(--surface2)}
 <script>
 let csvData=[], headers=[], colName=-1, colCell=-1, colsExtra=[], escalaTexto='';
 
-function saveKey(){
-  const k=document.getElementById('api-key').value.trim();
-  if(k.startsWith('gsk_')){
-    document.getElementById('api-status').textContent='✓ Chave configurada';
-    document.getElementById('api-status').style.color='var(--accent)';
-  }
-}
+
 
 function goStep(n){
   document.querySelectorAll('.step-content').forEach(s=>s.classList.remove('active'));
@@ -884,8 +874,8 @@ let escalaTexto='';
 
 async function gerarEscala(){
   const apiKey=document.getElementById('api-key').value.trim();
-  if(!apiKey||!apiKey.startsWith('gsk_')){
-    alert('Insira uma chave de API Groq válida (começa com gsk_)');return;
+  if(!apiKey){
+    alert('Erro: chave API não configurada.');return;
   }
   goStep(4);
   document.getElementById('loading-wrap').style.display='block';
