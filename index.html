@@ -696,7 +696,13 @@ async function loadData(){
   colName=headers.findIndex(h=>/nome|name/i.test(h));
   colCell=headers.findIndex(h=>/c[eé]lula|cell|grupo|group/i.test(h));
   colsExtra=headers.map((_,i)=>i).filter(i=>i!==colName&&i!==colCell);
-  renderTags(); renderPreview(); goStep(2);
+  try{
+    renderTags();
+    renderPreview();
+    goStep(2);
+  } catch(e){
+    errEl.innerHTML='<div class="error-box">Erro ao processar dados: '+e.message+'</div>';
+  }
 }
 
 function parseCSVLine(line, delim=','){
@@ -714,6 +720,7 @@ function parseCSVLine(line, delim=','){
 function renderTags(){
   ['name','cell','extra'].forEach(type=>{
     const el=document.getElementById('tags-'+type);
+    if(!el) return;
     el.innerHTML='';
     headers.forEach((h,i)=>{
       const t=document.createElement('span');
@@ -722,8 +729,8 @@ function renderTags(){
       if(type==='cell'&&i===colCell) cls+=' sel-cell';
       if(type==='extra'&&colsExtra.includes(i)) cls+=' sel-extra';
       t.className=cls;
-      t.innerHTML=`<span class="dot"></span>${h}`;
-      t.onclick=()=>clickTag(type,i);
+      t.innerHTML='<span class="dot"></span>'+h;
+      t.onclick=(()=>{const captured=i; return ()=>clickTag(type,captured);})();
       el.appendChild(t);
     });
   });
@@ -738,9 +745,10 @@ function clickTag(type,i){
 
 function renderPreview(){
   const t=document.getElementById('preview-table');
+  if(!t) return;
   const cols=headers.slice(0,7);
-  t.innerHTML=`<tr>${cols.map(h=>`<th>${h}</th>`).join('')}</tr>`
-    +csvData.slice(0,5).map(r=>`<tr>${cols.map((_,i)=>`<td>${r[i]||'—'}</td>`).join('')}</tr>`).join('');
+  t.innerHTML='<tr>'+cols.map(h=>'<th>'+h+'</th>').join('')+'</tr>'
+    +csvData.slice(0,5).map(r=>'<tr>'+cols.map((_,i)=>'<td>'+(r[i]||'—')+'</td>').join('')+'</tr>').join('');
 }
 
 const loadingMsgs=['Analisando voluntários e células...','Agrupando pessoas por célula...','Distribuindo funções equilibradamente...','Verificando consecutividade...','Finalizando a escala...'];
@@ -870,7 +878,6 @@ function buildPrompt(){
 
 // ── API CALL ─────────────────────────────────────────────────────────────────
 let escalaData=null;
-let escalaTexto='';
 
 async function gerarEscala(){
   const apiKey=document.getElementById('api-key').value.trim();
